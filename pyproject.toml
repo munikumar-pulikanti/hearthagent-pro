@@ -23,6 +23,8 @@ dependencies = [
     "numpy>=2.2.6",
     "libsql-experimental>=0.0.55",
     "python-dotenv>=1.2.3",
+    "streamlit>=1.62.0",
+    "pandas>=2.3.3",
 ]
 
 [tool.uv]
