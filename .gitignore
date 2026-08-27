@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+*.db
+*.db-journal
+.env
+.env.local
+config.local.yaml
+.ai-memory-vault/
+.chroma/
+.ollama/
+.idea/
+.vscode/
+*.log

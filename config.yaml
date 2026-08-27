@@ -1,0 +1,50 @@
+# hearthagent-pro configuration
+# Switch mode to control which backends are active
+
+mode: local  # local | prod
+
+embeddings:
+  local:
+    backend: sentence-transformers
+    model: all-MiniLM-L6-v2        # fully offline, no API key
+  prod:
+    backend: bedrock-titan          # or: openai, cohere, ollama-embed
+    model: amazon.titan-embed-text-v2:0
+    region: us-east-1
+
+cold_storage:
+  local:
+    backend: minio
+    endpoint: http://localhost:9000
+    bucket: hearthagent-cold
+    access_key: minioadmin
+    secret_key: minioadmin
+  prod:
+    backend: s3-compatible
+    endpoint: ""                    # leave blank for AWS S3; set for R2/B2/MinIO
+    bucket: your-bucket-name
+    prefix: cold-storage/
+
+team_sync:
+  local:
+    backend: none                   # or: turso-local (same file, no server)
+  prod:
+    backend: turso
+    url: libsql://your-db.turso.io
+    auth_token: your-token
+
+router:
+  local:
+    classifier_model: llama3.2:1b   # fastest local model for classification
+    routing_table:
+      investigate: qwen2.5-coder:14b
+      implement:   qwen2.5-coder:7b
+      unit_tests:  qwen2.5-coder:3b
+      extract:     llama3.2:1b
+  prod:
+    classifier_model: amazon.nova-micro-v1:0
+    routing_table:
+      investigate: claude-opus-4-5
+      implement:   claude-sonnet-4-5
+      unit_tests:  claude-haiku-3-5
+      extract:     amazon.nova-micro-v1:0

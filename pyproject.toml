@@ -1,0 +1,28 @@
+[project]
+name = "hearthagent-pro"
+version = "0.1.0"
+description = "Production-grade local-first AI agent with automatic model routing, memory tiers, and pluggable backends"
+authors = [{name = "munikumar-pulikanti"}]
+requires-python = ">=3.10"
+
+dependencies = [
+    "langgraph>=0.1.0",
+    "langchain>=0.1.0",
+    "chromadb>=0.5.0",
+    "sentence-transformers>=2.2.2",
+    "ollama>=0.1.0",
+    "pydantic>=2.0",
+    "pyyaml>=6.0",
+    "sqlite3-python>=1.0",
+    "boto3>=1.26.0",
+    "requests>=2.31.0",
+    "flask>=3.0.0",
+    "flask-cors>=4.0.0",
+]
+
+[tool.uv]
+allow-direct-references = true
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
