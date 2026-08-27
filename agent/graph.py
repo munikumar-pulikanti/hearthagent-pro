@@ -9,6 +9,7 @@ import time
 from langchain_ollama import ChatOllama
 from langchain_core.tools import tool
 from langgraph.prebuilt import create_react_agent
+from langgraph.errors import GraphRecursionError
 
 from agent.tools import (
     read_file, write_file, list_dir, search_code,
@@ -138,6 +139,20 @@ FABRICATED_SUCCESS_PHRASES = [
 ]
 
 
+def check_faithfulness(final_content: str, memory_pre_hit: bool, pre_hit_text: str) -> list:
+    """If memory was injected but the answer ignores it entirely, that's
+    a groundedness failure -- the model fabricated instead of using real
+    context. Heuristic word-overlap check, deterministic, no extra LLM call."""
+    if not memory_pre_hit or not pre_hit_text:
+        return []
+    memory_words = set(w.lower() for w in pre_hit_text.split() if len(w) > 4)
+    answer_words = set(w.lower() for w in final_content.split() if len(w) > 4)
+    overlap = memory_words & answer_words
+    if len(overlap) < 2:
+        return ["memory_injected_but_likely_ignored"]
+    return []
+
+
 def check_assertions(final_content: str, tool_call_count: int, tool_names_called: set) -> list:
     """Deterministic, local, no-cloud checks against a turn's output.
     Catches known bad patterns (like the qwen2.5-coder fabrication bug)
@@ -168,6 +183,10 @@ def _detect_memory_tier(pre_hit_text: str) -> str:
         return "cold"
     if "from warm/Turso" in pre_hit_text:
         return "warm"
+    if pre_hit_text and pre_hit_text.startswith("ERROR"):
+        return "none"
+    if pre_hit_text and pre_hit_text.startswith("ERROR"):
+        return "none"
     if pre_hit_text and "No matching memories" not in pre_hit_text and \
        "No semantic matches" not in pre_hit_text:
         return "hot"
@@ -199,13 +218,27 @@ class Session:
                 f"[Relevant memory found before you were called -- use this if helpful, "
                 f"don't re-search unless it's insufficient:]\n{pre_hit}"
             )
+            history_len_before = len(self.history)
             self.history.append(("user", augmented_input))
         else:
+            history_len_before = len(self.history)
             self.history.append(("user", user_input))
 
         error_occurred = False
         try:
-            result = agent.invoke({"messages": self.history})
+            result = agent.invoke({"messages": self.history}, config={"recursion_limit": 15})
+        except GraphRecursionError:
+            error_occurred = True
+            duration = time.time() - start
+            metrics.log_turn(
+                task_snippet=user_input, category=category, model=model_name,
+                duration_seconds=duration, memory_pre_hit=memory_pre_hit,
+                memory_tier=memory_tier, error_occurred=True,
+                assertion_flags="hit_recursion_limit",
+            )
+            return (f"I got stuck in a loop after too many steps trying to answer "
+                    f"that (limit: 15). Try rephrasing, or breaking it into a "
+                    f"smaller task.")
         except Exception:
             error_occurred = True
             duration = time.time() - start
@@ -216,7 +249,7 @@ class Session:
             )
             raise
 
-        for m in result["messages"]:
+        for m in result["messages"][history_len_before:]:
             m.pretty_print()
 
         final_msg = result["messages"][-1]
@@ -235,8 +268,8 @@ class Session:
                 ("assistant", f"[executed {tool_name} manually after it was printed as text instead of called]"),
                 ("tool", str(tool_result)),
             ]
-            result2 = agent.invoke({"messages": self.history})
-            for m in result2["messages"]:
+            result2 = agent.invoke({"messages": self.history}, config={"recursion_limit": 15})
+            for m in result2["messages"][len(result["messages"]):]:
                 m.pretty_print()
             self.history = result2["messages"]
             final_content = result2["messages"][-1].content
@@ -245,15 +278,17 @@ class Session:
             final_content = final_msg.content
 
         duration = time.time() - start
+        faithfulness_flags = check_faithfulness(final_content, memory_pre_hit, pre_hit)
         assertion_flags = check_assertions(final_content, tool_call_count, tool_names_called)
-        if assertion_flags:
-            print(f"--- ASSERTION FAILURES: {', '.join(assertion_flags)} ---")
+        all_flags = assertion_flags + faithfulness_flags
+        if all_flags:
+            print(f"--- ASSERTION FAILURES: {', '.join(all_flags)} ---")
 
         metrics.log_turn(
             task_snippet=user_input, category=category, model=model_name,
             duration_seconds=duration, tool_call_count=tool_call_count,
             memory_pre_hit=memory_pre_hit, memory_tier=memory_tier,
-            error_occurred=error_occurred, assertion_flags=",".join(assertion_flags),
+            error_occurred=error_occurred, assertion_flags=",".join(all_flags),
             input_tokens=input_tokens, output_tokens=output_tokens,
         )
 

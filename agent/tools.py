@@ -66,10 +66,17 @@ def list_dir(path: str = ".") -> str:
     return "\n".join(f"{'d' if e.is_dir() else 'f'} {e.name}" for e in entries)
 
 
+SEARCH_EXCLUDE_DIRS = [".venv", "venv", ".git", "__pycache__", "node_modules", ".pytest_cache"]
+
+
 def search_code(query: str, path: str = ".") -> str:
     try:
+        cmd = ["grep", "-rn", "--include=*.py"]
+        for d in SEARCH_EXCLUDE_DIRS:
+            cmd += ["--exclude-dir=" + d]
+        cmd += [query, path]
         result = subprocess.run(
-            ["grep", "-rn", "--include=*.py", query, path],
+            cmd,
             capture_output=True, text=True, timeout=15
         )
         return result.stdout[:3000] or "No matches found."
@@ -127,12 +134,16 @@ def memory_search(query: str, limit: int = 5) -> str:
         return "No memory vault found at ~/.ai-memory-vault/"
     conn = sqlite3.connect(VAULT_DB)
     conn.row_factory = sqlite3.Row
+    # FTS5 treats :, -, *, AND/OR/NOT as query syntax. Quoting the whole
+    # query as a literal phrase avoids syntax errors on ordinary input
+    # like "hearthagent-pro" or "remember this:".
+    safe_query = '"' + query.replace('"', '""') + '"'
     try:
         rows = conn.execute(
             "SELECT m.scope, m.type, m.content, m.confidence FROM memories_fts f "
             "JOIN memories m ON m.id = f.rowid "
             "WHERE f.memories_fts MATCH ? AND COALESCE(m.archived, 0) = 0 LIMIT ?",
-            (query, limit)
+            (safe_query, limit)
         ).fetchall()
     except Exception as e:
         return f"ERROR searching memory: {e}"
