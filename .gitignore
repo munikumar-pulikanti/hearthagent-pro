@@ -6,3 +6,9 @@ htmlcov/
 build/
 dist/
 *.egg-info/
+.env
+__pycache__/
+*.pyc
+*-replica.db
+*-replica.db-*
+test_result.txt

@@ -20,6 +20,9 @@ dependencies = [
     "langchain-ollama>=1.1.0",
     "langchain-core>=1.6.0",
     "ddgs>=9.16.0",
+    "numpy>=2.2.6",
+    "libsql-experimental>=0.0.55",
+    "python-dotenv>=1.2.3",
 ]
 
 [tool.uv]

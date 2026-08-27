@@ -1,10 +1,10 @@
 """LangGraph ReAct agent for hearthagent-pro. Routes each task through
-ModelRouter, with a manual fallback for models that print a tool call as
-text instead of actually invoking it (a documented issue with some
-qwen2.5-coder sizes in this Ollama setup)."""
+ModelRouter, checks memory deterministically before any model call, and
+logs usage metrics -- including which memory tier resolved the lookup."""
 import json
 import os
 import re
+import time
 
 from langchain_ollama import ChatOllama
 from langchain_core.tools import tool
@@ -17,6 +17,7 @@ from agent.tools import (
     web_search,
 )
 from agent.router import ModelRouter
+from agent import metrics
 
 
 @tool
@@ -57,19 +58,19 @@ def memory_search_tool(query: str) -> str:
 
 @tool
 def memory_semantic_search_tool(query: str) -> str:
-    """Meaning-based (semantic) search over the memory vault via ChromaDB."""
+    """Meaning-based (semantic) search across hot, warm, and cold memory tiers."""
     return memory_semantic_search(query)
 
 
 @tool
 def memory_sync_embeddings_tool() -> str:
-    """Re-index all memory vault rows into ChromaDB. Run after saving new memories."""
+    """Re-index all active memory vault rows into ChromaDB."""
     return memory_sync_embeddings()
 
 
 @tool
 def memory_save_tool(scope: str, type_: str, content: str, tags: str = "") -> str:
-    """Save a new confirmed finding to the persistent memory vault."""
+    """Save a new finding to the persistent memory vault."""
     return memory_save(scope, type_, content, tags)
 
 
@@ -90,8 +91,6 @@ TOOLS_BY_NAME = {t.name: t for t in TOOLS}
 
 
 def try_parse_manual_tool_call(text):
-    """Detect a tool call printed as JSON text instead of really being
-    invoked. Returns (tool_name, args_dict) or (None, None)."""
     if not text:
         return None, None
     match = re.search(
@@ -133,23 +132,100 @@ def build_agent(model_name: str, category: str):
     return create_react_agent(llm, TOOLS, prompt=build_system_prompt(category))
 
 
+FABRICATED_SUCCESS_PHRASES = [
+    "test passed", "tests pass", "successfully ran", "completed successfully",
+    "ran successfully", "all tests passed",
+]
+
+
+def check_assertions(final_content: str, tool_call_count: int, tool_names_called: set) -> list:
+    """Deterministic, local, no-cloud checks against a turn's output.
+    Catches known bad patterns (like the qwen2.5-coder fabrication bug)
+    without needing any external service."""
+    flags = []
+    lowered = (final_content or "").lower()
+
+    claims_success = any(p in lowered for p in FABRICATED_SUCCESS_PHRASES)
+    actually_verified = "run_shell_tool" in tool_names_called
+    if claims_success and not actually_verified:
+        # Writing "test passed" to a file, or just calling write_file_tool,
+        # is NOT verification. Only actually running the test counts.
+        flags.append("claimed_success_without_real_verification")
+
+    if not final_content or not final_content.strip():
+        flags.append("empty_response")
+
+    if '"name":' in (final_content or "") and '"arguments":' in (final_content or ""):
+        flags.append("unexecuted_tool_call_leaked_to_user")
+
+    return flags
+
+
+def _detect_memory_tier(pre_hit_text: str) -> str:
+    """Infer which tier actually resolved a memory pre-check, from the
+    markers memory_semantic_search already includes in its output."""
+    if "auto-restored from cold storage" in pre_hit_text:
+        return "cold"
+    if "from warm/Turso" in pre_hit_text:
+        return "warm"
+    if pre_hit_text and "No matching memories" not in pre_hit_text and \
+       "No semantic matches" not in pre_hit_text:
+        return "hot"
+    return "none"
+
+
 class Session:
     def __init__(self):
         self.router = ModelRouter()
         self.history = []
 
     def send(self, user_input: str) -> str:
+        start = time.time()
         model_name, category = self.router.route(user_input)
         print(f"--- routed to: {model_name} (category: {category}) ---")
 
+        pre_hit = memory_search(user_input)
+        if "No matching memories" in pre_hit:
+            pre_hit = memory_semantic_search(user_input)
+        memory_tier = _detect_memory_tier(pre_hit)
+        memory_pre_hit = memory_tier != "none"
+
         agent = build_agent(model_name, category)
-        self.history.append(("user", user_input))
-        result = agent.invoke({"messages": self.history})
+
+        if memory_pre_hit:
+            print(f"--- memory pre-check hit ({memory_tier}), injecting before model call ---")
+            augmented_input = (
+                f"{user_input}\n\n"
+                f"[Relevant memory found before you were called -- use this if helpful, "
+                f"don't re-search unless it's insufficient:]\n{pre_hit}"
+            )
+            self.history.append(("user", augmented_input))
+        else:
+            self.history.append(("user", user_input))
+
+        error_occurred = False
+        try:
+            result = agent.invoke({"messages": self.history})
+        except Exception:
+            error_occurred = True
+            duration = time.time() - start
+            metrics.log_turn(
+                task_snippet=user_input, category=category, model=model_name,
+                duration_seconds=duration, memory_pre_hit=memory_pre_hit,
+                memory_tier=memory_tier, error_occurred=True,
+            )
+            raise
 
         for m in result["messages"]:
             m.pretty_print()
 
         final_msg = result["messages"][-1]
+        tool_call_count = sum(
+            len(getattr(m, "tool_calls", None) or []) for m in result["messages"]
+        )
+        tool_names_called = {tc.get("name") for m in result["messages"] for tc in (getattr(m, "tool_calls", None) or [])}
+        input_tokens = sum((getattr(m, "usage_metadata", None) or {}).get("input_tokens", 0) or 0 for m in result["messages"])
+        output_tokens = sum((getattr(m, "usage_metadata", None) or {}).get("output_tokens", 0) or 0 for m in result["messages"])
         tool_name, args = try_parse_manual_tool_call(final_msg.content or "")
 
         if tool_name:
@@ -163,10 +239,25 @@ class Session:
             for m in result2["messages"]:
                 m.pretty_print()
             self.history = result2["messages"]
-            return result2["messages"][-1].content
+            final_content = result2["messages"][-1].content
+        else:
+            self.history = result["messages"]
+            final_content = final_msg.content
 
-        self.history = result["messages"]
-        return final_msg.content
+        duration = time.time() - start
+        assertion_flags = check_assertions(final_content, tool_call_count, tool_names_called)
+        if assertion_flags:
+            print(f"--- ASSERTION FAILURES: {', '.join(assertion_flags)} ---")
+
+        metrics.log_turn(
+            task_snippet=user_input, category=category, model=model_name,
+            duration_seconds=duration, tool_call_count=tool_call_count,
+            memory_pre_hit=memory_pre_hit, memory_tier=memory_tier,
+            error_occurred=error_occurred, assertion_flags=",".join(assertion_flags),
+            input_tokens=input_tokens, output_tokens=output_tokens,
+        )
+
+        return final_content
 
 
 def run_task(task: str):
