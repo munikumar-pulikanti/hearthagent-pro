@@ -1,34 +1,31 @@
-#!/usr/bin/env python3
-"""hearthagent-pro: local-first AI agent with model routing."""
-
 import sys
-import yaml
-from pathlib import Path
-from agent.router import ModelRouter
+from agent.graph import Session, run_task
+
+BANNER = """
+hearthagent-pro -- local agent with automatic model routing
+type /quit to exit
+"""
 
 
-def load_config(config_path: str = "config.yaml") -> dict:
-    """Load configuration."""
-    with open(config_path) as f:
-        return yaml.safe_load(f)
-
-
-def main():
-    """Main entry point."""
-    config = load_config()
-    mode = config.get("mode", "local")
-
-    print(f"🧠 hearthagent-pro ({mode} mode)")
-
-    # Initialize router
-    router = ModelRouter()
-    print(f"Router loaded: {router.classifier_model}")
-
-    # TODO: Initialize agent, memory, tools
-    # TODO: Main loop
-
-    print("Ready. (Implementation in progress)")
+def interactive_session():
+    print(BANNER)
+    session = Session()
+    while True:
+        try:
+            user_input = input("\nyou> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\nExiting.")
+            break
+        if not user_input:
+            continue
+        if user_input in ("/quit", "/exit"):
+            print("Exiting.")
+            break
+        session.send(user_input)
 
 
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) > 1:
+        run_task(" ".join(sys.argv[1:]))
+    else:
+        interactive_session()

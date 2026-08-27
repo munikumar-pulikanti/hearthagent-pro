@@ -13,15 +13,17 @@ dependencies = [
     "ollama>=0.1.0",
     "pydantic>=2.0",
     "pyyaml>=6.0",
-    "sqlite3-python>=1.0",
     "boto3>=1.26.0",
     "requests>=2.31.0",
     "flask>=3.0.0",
     "flask-cors>=4.0.0",
+    "langchain-ollama>=1.1.0",
+    "langchain-core>=1.6.0",
+    "ddgs>=9.16.0",
 ]
 
 [tool.uv]
-allow-direct-references = true
+package = false
 
 [build-system]
 requires = ["hatchling"]

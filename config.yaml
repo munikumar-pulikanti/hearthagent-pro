@@ -37,10 +37,17 @@ router:
   local:
     classifier_model: llama3.2:1b   # fastest local model for classification
     routing_table:
-      investigate: qwen2.5-coder:14b
-      implement:   qwen2.5-coder:7b
-      unit_tests:  qwen2.5-coder:3b
-      extract:     llama3.2:1b
+      # NOTE: qwen2.5-coder (14b/7b/3b) were tested 2026-08 and all three
+      # failed to reliably execute real tool calls -- they print tool
+      # calls as text instead, sometimes with invalid JSON. llama3.1:8b
+      # was proven reliable across extensive testing in the hearthagent
+      # baseline project. Speed-tiering is lost until smaller models are
+      # individually re-verified for tool-calling reliability.
+      investigate: llama3.1:8b
+      implement:   llama3.1:8b
+      unit_tests:  llama3.1:8b
+      extract:     llama3.2:1b   # unverified for tool-calling -- classification-only use for now
+      general:     llama3.1:8b   # casual chat / non-coding messages
   prod:
     classifier_model: amazon.nova-micro-v1:0
     routing_table:
