@@ -1,0 +1,178 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 900" width="100%" height="100%" style="background:#0b0f19; font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
+  <defs>
+    <linearGradient id="grad-header" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#38bdf8"/>
+      <stop offset="50%" stop-color="#818cf8"/>
+      <stop offset="100%" stop-color="#c084fc"/>
+    </linearGradient>
+    <linearGradient id="grad-blue" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#1e293b"/>
+      <stop offset="100%" stop-color="#0f172a"/>
+    </linearGradient>
+    <linearGradient id="grad-purple" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#2e1065"/>
+      <stop offset="100%" stop-color="#0f172a"/>
+    </linearGradient>
+    <linearGradient id="grad-amber" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#451a03"/>
+      <stop offset="100%" stop-color="#0f172a"/>
+    </linearGradient>
+    <linearGradient id="grad-emerald" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#064e3b"/>
+      <stop offset="100%" stop-color="#0f172a"/>
+    </linearGradient>
+    <linearGradient id="grad-rose" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#4c0519"/>
+      <stop offset="100%" stop-color="#0f172a"/>
+    </linearGradient>
+    
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="6" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+    </filter>
+    
+    <marker id="arrow" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 8 5 L 0 9 z" fill="#64748b"/>
+    </marker>
+    <marker id="arrow-blue" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 8 5 L 0 9 z" fill="#38bdf8"/>
+    </marker>
+    <marker id="arrow-purple" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 8 5 L 0 9 z" fill="#c084fc"/>
+    </marker>
+  </defs>
+
+  <!-- Title Header -->
+  <g transform="translate(60, 40)">
+    <text x="0" y="32" font-size="28" font-weight="800" fill="url(#grad-header)" letter-spacing="0.5">hearthagent-pro : Complete Architecture</text>
+    <text x="0" y="58" font-size="14" fill="#94a3b8">Local-First • Task-Aware Routing • 3-Tier Evidence-Gated Memory • Reliability Assertions • Cross-Tool FastMCP</text>
+  </g>
+
+  <!-- ================= SECTION 1: INGESTION & INTERFACES ================= -->
+  <g transform="translate(60, 120)">
+    <rect width="1080" height="95" rx="12" fill="url(#grad-blue)" stroke="#334155" stroke-width="1.5"/>
+    <text x="24" y="28" font-size="12" font-weight="700" fill="#38bdf8" letter-spacing="1">1. MULTI-MODAL INTERFACES &amp; CROSS-TOOL CLIENTS</text>
+    
+    <!-- Subcard 1: CLI -->
+    <rect x="24" y="40" width="310" height="42" rx="8" fill="#1e293b" stroke="#475569" stroke-width="1"/>
+    <text x="40" y="65" font-size="13" font-weight="600" fill="#f8fafc">💻 Interactive CLI (muni / main.py)</text>
+
+    <!-- Subcard 2: Voice -->
+    <rect x="360" y="40" width="340" height="42" rx="8" fill="#1e293b" stroke="#475569" stroke-width="1"/>
+    <text x="375" y="65" font-size="13" font-weight="600" fill="#f8fafc">🎙️ Hands-Free Voice (faster-whisper + parecord)</text>
+
+    <!-- Subcard 3: FastMCP -->
+    <rect x="725" y="40" width="330" height="42" rx="8" fill="#1e293b" stroke="#475569" stroke-width="1"/>
+    <text x="740" y="65" font-size="13" font-weight="600" fill="#f8fafc">⚡ FastMCP Server (Windsurf / Antigravity / Cursor)</text>
+  </g>
+
+  <!-- Arrow down to routing -->
+  <path d="M 600 215 L 600 245" stroke="#38bdf8" stroke-width="2" marker-end="url(#arrow-blue)" fill="none"/>
+
+  <!-- ================= SECTION 2: COST ROUTING & CURATION ================= -->
+  <g transform="translate(60, 250)">
+    <rect width="520" height="230" rx="12" fill="url(#grad-purple)" stroke="#6b21a8" stroke-width="1.5"/>
+    <text x="24" y="28" font-size="12" font-weight="700" fill="#c084fc" letter-spacing="1">2. TASK-AWARE ROUTER &amp; 1B CURATION</text>
+    
+    <!-- Task Classifier Box -->
+    <rect x="24" y="42" width="472" height="75" rx="8" fill="#1e1b4b" stroke="#4c1d95" stroke-width="1"/>
+    <text x="40" y="65" font-size="14" font-weight="700" fill="#e9d5ff">🎯 Intent Classifier (Llama 3.2 1B)</text>
+    <text x="40" y="88" font-size="12" fill="#c4b5fd">Classifies NLP prompt into: investigate • implement • unit_tests • extract • general</text>
+    <text x="40" y="105" font-size="11" fill="#a78bfa">Routes cheap extraction tasks directly; schedules heavy reasoning to 8B model</text>
+
+    <!-- Candidate Curation Box -->
+    <rect x="24" y="130" width="472" height="85" rx="8" fill="#1e1b4b" stroke="#4c1d95" stroke-width="1"/>
+    <text x="40" y="152" font-size="14" font-weight="700" fill="#e9d5ff">🧹 Pre-Flight Relevance Curator (Llama 3.2 1B)</text>
+    <text x="40" y="174" font-size="12" fill="#c4b5fd">Filters retrieved RAG candidates before prompt injection</text>
+    <text x="40" y="193" font-size="11" fill="#34d399">✓ Drops irrelevant noise • Prevents token bloat • Eliminates false faithfulness flags</text>
+  </g>
+
+  <!-- ================= SECTION 3: REASONING & RELIABILITY LAYER ================= -->
+  <g transform="translate(620, 250)">
+    <rect width="520" height="230" rx="12" fill="url(#grad-emerald)" stroke="#047857" stroke-width="1.5"/>
+    <text x="24" y="28" font-size="12" font-weight="700" fill="#34d399" letter-spacing="1">3. REASONING ENGINE &amp; RELIABILITY GUARDRAILS</text>
+    
+    <!-- LangGraph Box -->
+    <rect x="24" y="42" width="472" height="75" rx="8" fill="#022c22" stroke="#065f46" stroke-width="1"/>
+    <text x="40" y="65" font-size="14" font-weight="700" fill="#a7f3d0">🧠 LangGraph ReAct Agent (Llama 3.1 8B)</text>
+    <text x="40" y="88" font-size="12" fill="#6ee7b7">Autonomous tool loop: File Read/Write • Shell Execution • Code Search</text>
+    <text x="40" y="105" font-size="11" fill="#5eead4">Deterministic memory pre-check injected into system prompt upfront</text>
+
+    <!-- Hard Assertions Box -->
+    <rect x="24" y="130" width="472" height="85" rx="8" fill="#022c22" stroke="#065f46" stroke-width="1"/>
+    <text x="40" y="152" font-size="14" font-weight="700" fill="#a7f3d0">🛡️ Programmatic Reliability Layer</text>
+    <text x="40" y="173" font-size="11" fill="#6ee7b7">• 15-Step Recursion Limit with graceful degradation (never crashes on recursion)</text>
+    <text x="40" y="190" font-size="11" fill="#6ee7b7">• Catches unexecuted tool-call JSON text leaks &amp; empty responses</text>
+    <text x="40" y="206" font-size="11" fill="#6ee7b7">• Session Assertions: Flags unverified "tests passed" claims</text>
+  </g>
+
+  <!-- Connect Routing to Agent -->
+  <path d="M 580 365 L 620 365" stroke="#c084fc" stroke-width="2" marker-end="url(#arrow-purple)" fill="none"/>
+
+  <!-- ================= SECTION 4: 3-TIER EVIDENCE-GATED MEMORY ================= -->
+  <g transform="translate(60, 505)">
+    <rect width="700" height="245" rx="12" fill="url(#grad-amber)" stroke="#b45309" stroke-width="1.5"/>
+    <text x="24" y="28" font-size="12" font-weight="700" fill="#fbbf24" letter-spacing="1">4. 3-TIER STORAGE CASCADE &amp; EVIDENCE-GATED CONFIDENCE</text>
+    
+    <!-- 3 Storage Tiers Grid -->
+    <!-- Hot -->
+    <rect x="24" y="45" width="205" height="100" rx="8" fill="#291e0a" stroke="#78350f" stroke-width="1"/>
+    <text x="36" y="68" font-size="13" font-weight="700" fill="#fde68a">🔥 HOT TIER</text>
+    <text x="36" y="88" font-size="11" fill="#fef08a">SQLite FTS5 (Keyword)</text>
+    <text x="36" y="105" font-size="11" fill="#fef08a">+ ChromaDB (Semantic)</text>
+    <text x="36" y="128" font-size="10" fill="#cbd5e1">Auto-embeds on save</text>
+
+    <!-- Warm -->
+    <rect x="245" y="45" width="205" height="100" rx="8" fill="#291e0a" stroke="#78350f" stroke-width="1"/>
+    <text x="257" y="68" font-size="13" font-weight="700" fill="#fde68a">♨️ WARM TIER</text>
+    <text x="257" y="88" font-size="11" fill="#fef08a">Turso (libSQL Cloud)</text>
+    <text x="257" y="105" font-size="11" fill="#fef08a">Bidirectional Push/Pull</text>
+    <text x="257" y="128" font-size="10" fill="#cbd5e1">Multi-writer sync</text>
+
+    <!-- Cold -->
+    <rect x="465" y="45" width="210" height="100" rx="8" fill="#291e0a" stroke="#78350f" stroke-width="1"/>
+    <text x="477" y="68" font-size="13" font-weight="700" fill="#fde68a">❄️ COLD TIER</text>
+    <text x="477" y="88" font-size="11" fill="#fef08a">MinIO / S3 Object Storage</text>
+    <text x="477" y="105" font-size="11" fill="#fef08a">Archive idle memories</text>
+    <text x="477" y="128" font-size="10" fill="#cbd5e1">Transparent restore on miss</text>
+
+    <!-- Evidence Lifecycle State Machine -->
+    <rect x="24" y="158" width="652" height="72" rx="8" fill="#1c1404" stroke="#92400e" stroke-width="1"/>
+    <text x="36" y="178" font-size="12" font-weight="700" fill="#fde047">🛡️ Evidence-Gated Confidence State Machine:</text>
+    <text x="36" y="200" font-size="12" fill="#fef9c3">New findings start as <tspan fill="#f87171" font-weight="700">hypothesis</tspan> ➔ Corroboration increases count ➔ Capped at <tspan fill="#fbbf24" font-weight="700">suspected</tspan></text>
+    <text x="36" y="218" font-size="11" fill="#4ade80">➔ Strictly promoted to <tspan font-weight="700">confirmed</tspan> ONLY upon live HTTP URL verification check via _verify_evidence_url()</text>
+  </g>
+
+  <!-- ================= SECTION 5: EVALS & METRICS ================= -->
+  <g transform="translate(780, 505)">
+    <rect width="360" height="245" rx="12" fill="url(#grad-rose)" stroke="#9f1239" stroke-width="1.5"/>
+    <text x="24" y="28" font-size="12" font-weight="700" fill="#fda4af" letter-spacing="1">5. EVAL SUITE &amp; OBSERVABILITY</text>
+    
+    <!-- Golden Baseline Box -->
+    <rect x="20" y="45" width="320" height="85" rx="8" fill="#2a0611" stroke="#881337" stroke-width="1"/>
+    <text x="32" y="68" font-size="13" font-weight="700" fill="#ffe4e6">📊 Golden Baseline Evals (save eval)</text>
+    <text x="32" y="88" font-size="11" fill="#fecdd3">Snapshots task, answer, and git commit</text>
+    <text x="32" y="105" font-size="11" fill="#f43f5e">Low-cost LLM Judge (bin/evals.py) grades</text>
+    <text x="32" y="120" font-size="10" fill="#fda4af">regressions with structured JSON output</text>
+
+    <!-- Metrics DB & Dashboard Box -->
+    <rect x="20" y="142" width="320" height="88" rx="8" fill="#2a0611" stroke="#881337" stroke-width="1"/>
+    <text x="32" y="165" font-size="13" font-weight="700" fill="#ffe4e6">📈 Real-Time Streamlit Dashboard</text>
+    <text x="32" y="185" font-size="11" fill="#fecdd3">Logs every turn to SQLite metrics DB:</text>
+    <text x="32" y="202" font-size="11" fill="#fb7185">• Task Category • Routed Model • Latency</text>
+    <text x="32" y="218" font-size="11" fill="#fb7185">• Token Counts • Memory Tier • Assertion Flags</text>
+  </g>
+
+  <!-- Flow arrows connecting memory to agent -->
+  <path d="M 410 505 L 410 480" stroke="#fbbf24" stroke-width="2" marker-end="url(#arrow)" fill="none"/>
+  <path d="M 880 480 L 880 505" stroke="#f43f5e" stroke-width="2" marker-end="url(#arrow)" fill="none"/>
+
+  <!-- ================= FOOTER / ENTERPRISE CALLOUT ================= -->
+  <g transform="translate(60, 770)">
+    <rect width="1080" height="90" rx="10" fill="#111827" stroke="#1f2937" stroke-width="1.5"/>
+    <text x="24" y="30" font-size="12" font-weight="700" fill="#38bdf8" letter-spacing="1">💡 ENTERPRISE &amp; MODEL-AGNOSTIC PORTABILITY</text>
+    <text x="24" y="52" font-size="13" fill="#e2e8f0">Local execution runs 100% on CPU (Ollama Llama 3.1 8B + 3.2 1B). Zero cloud dependency, zero API cost.</text>
+    <text x="24" y="72" font-size="13" fill="#94a3b8">In cloud environments, this exact architecture scales: <tspan fill="#34d399">Gemini Flash / Claude Haiku</tspan> handles classification/curation/evals to cut 60–80% off <tspan fill="#c084fc">Claude Sonnet / GPT-4o</tspan> API bills.</text>
+  </g>
+
+</svg>

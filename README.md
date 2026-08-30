@@ -6,6 +6,10 @@ Runs 100% locally on consumer hardware via Ollama (CPU-only, no mandatory cloud 
 
 ---
 
+![hearthagent-pro Architecture](architecture.svg)
+
+---
+
 ## Architecture & Key Features
 
 ### 1. Task-Aware Model Routing & Curation
