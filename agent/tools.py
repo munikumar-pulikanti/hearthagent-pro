@@ -12,6 +12,7 @@ import numpy as np
 import yaml
 from sentence_transformers import SentenceTransformer
 from ddgs import DDGS
+import requests
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -108,8 +109,29 @@ def _ensure_confidence_columns():
         conn.execute("ALTER TABLE memories ADD COLUMN corroboration_count INTEGER DEFAULT 1")
     if "needs_review" not in cols:
         conn.execute("ALTER TABLE memories ADD COLUMN needs_review INTEGER DEFAULT 0")
+    if "evidence_url" not in cols:
+        conn.execute("ALTER TABLE memories ADD COLUMN evidence_url TEXT")
+    if "evidence_verified" not in cols:
+        conn.execute("ALTER TABLE memories ADD COLUMN evidence_verified INTEGER DEFAULT 0")
     conn.commit()
     conn.close()
+
+
+def _verify_evidence_url(url: str) -> bool:
+    """Check that an evidence URL actually resolves. A citation that 404s
+    is not evidence -- this mirrors requiring a real Jira/AWS/code
+    reference, not just a claim that one exists."""
+    if not url:
+        return False
+    try:
+        resp = requests.head(url, timeout=5, allow_redirects=True)
+        return resp.status_code < 400
+    except Exception:
+        try:
+            resp = requests.get(url, timeout=5)
+            return resp.status_code < 400
+        except Exception:
+            return False
 
 
 def _get_embedder():
@@ -169,14 +191,21 @@ def _find_most_similar_active(content: str):
     return (int(ids[0]), similarity)
 
 
-def memory_save(scope: str, type_: str, content: str, tags: str = "") -> str:
+def memory_save(scope: str, type_: str, content: str, tags: str = "", evidence_url: str = "") -> str:
     """Save a finding. New memories start at 'hypothesis'. A highly similar
     existing memory is treated as corroboration (bump count, promote
     confidence) instead of a duplicate insert. A moderately similar memory
     is flagged for review rather than assumed to agree or conflict --
-    embedding similarity alone can't tell those apart."""
+    embedding similarity alone can't tell those apart.
+
+    Confidence is gated on evidence: without a verified evidence_url
+    (a real link that actually resolves -- a commit, a ticket, a doc),
+    confidence caps at 'suspected' regardless of corroboration count.
+    Restating an unverified claim many times does not make it confirmed."""
     _ensure_confidence_columns()
     VAULT_DB.parent.mkdir(parents=True, exist_ok=True)
+
+    evidence_verified = 1 if evidence_url and _verify_evidence_url(evidence_url) else 0
 
     match = _find_most_similar_active(content)
 
@@ -184,35 +213,66 @@ def memory_save(scope: str, type_: str, content: str, tags: str = "") -> str:
         existing_id, sim = match
         conn = sqlite3.connect(VAULT_DB)
         row = conn.execute(
-            "SELECT corroboration_count, confidence FROM memories WHERE id = ?", (existing_id,)
+            "SELECT corroboration_count, evidence_verified FROM memories WHERE id = ?", (existing_id,)
         ).fetchone()
         new_count = (row[0] or 1) + 1
-        new_confidence = "confirmed" if new_count >= 3 else "suspected" if new_count >= 2 else "hypothesis"
+        existing_evidence_verified = row[1] if row and len(row) > 1 else 0
+        has_evidence = evidence_verified or existing_evidence_verified
+
+        if has_evidence:
+            new_confidence = "confirmed" if new_count >= 3 else "suspected"
+        else:
+            new_confidence = "suspected"  # capped -- no verified evidence, ever
+
+        update_evidence = ", evidence_url = ?, evidence_verified = 1" if evidence_verified and not existing_evidence_verified else ""
+        params = [new_count, new_confidence]
+        if update_evidence:
+            params.append(evidence_url)
+        params.append(existing_id)
+
         conn.execute(
-            "UPDATE memories SET corroboration_count = ?, confidence = ?, updated_at = unixepoch() WHERE id = ?",
-            (new_count, new_confidence, existing_id)
+            f"UPDATE memories SET corroboration_count = ?, confidence = ?, "
+            f"updated_at = unixepoch(){update_evidence} WHERE id = ?",
+            params
         )
         conn.commit()
         conn.close()
+        evidence_note = " (evidence-backed)" if has_evidence else " (no verified evidence -- capped at suspected)"
         return (f"Corroborated existing memory {existing_id} (similarity {sim:.2f}) -- "
-                f"now confidence={new_confidence}, corroboration_count={new_count}")
+                f"now confidence={new_confidence}, corroboration_count={new_count}{evidence_note}")
 
     conn = sqlite3.connect(VAULT_DB)
     needs_review = 1 if match and REVIEW_BAND_LOW <= match[1] < REVIEW_BAND_HIGH else 0
     cursor = conn.execute(
         "INSERT INTO memories (scope, type, tags, content, confidence, corroboration_count, "
-        "needs_review, updated_at) VALUES (?, ?, ?, ?, 'hypothesis', 1, ?, unixepoch())",
-        (scope, type_, tags, content, needs_review)
+        "needs_review, evidence_url, evidence_verified, updated_at) "
+        "VALUES (?, ?, ?, ?, 'hypothesis', 1, ?, ?, ?, unixepoch())",
+        (scope, type_, tags, content, needs_review, evidence_url or None, evidence_verified)
     )
     new_id = cursor.lastrowid
     conn.commit()
     conn.close()
 
+    # Immediately embed the new memory so it's findable by semantic search
+    # AND by future corroboration checks right away -- without this, every
+    # save is invisible to _find_most_similar_active until a manual sync.
+    try:
+        embedder = _get_embedder()
+        collection = _get_chroma_collection()
+        collection.upsert(
+            ids=[str(new_id)], documents=[content],
+            metadatas=[{"scope": scope, "type": type_}],
+            embeddings=embedder.encode([content]).tolist(),
+        )
+    except Exception as e:
+        print(f"Warning: memory {new_id} saved but not embedded: {e}")
+
     if needs_review:
         return (f"Saved memory {new_id} as hypothesis, but flagged needs_review=1 -- "
                 f"similar to memory {match[0]} (similarity {match[1]:.2f}), unclear if it "
                 f"agrees or conflicts. Manual review recommended.")
-    return f"Saved memory {new_id} to scope={scope}, type={type_}, confidence=hypothesis"
+    evidence_note = " (evidence verified)" if evidence_verified else " (no evidence -- can never exceed suspected without one)"
+    return f"Saved memory {new_id} to scope={scope}, type={type_}, confidence=hypothesis{evidence_note}"
 
 
 def memory_sync_embeddings() -> str:

@@ -70,9 +70,14 @@ def memory_sync_embeddings_tool() -> str:
 
 
 @tool
-def memory_save_tool(scope: str, type_: str, content: str, tags: str = "") -> str:
-    """Save a new finding to the persistent memory vault."""
-    return memory_save(scope, type_, content, tags)
+def memory_save_tool(scope: str, type_: str, content: str, tags: str = "", evidence_url: str = "") -> str:
+    """Save a new finding to the persistent memory vault. If you have a
+    real source for this finding (a file path, a command output, a URL),
+    pass it as evidence_url. Findings without verified evidence can never
+    be promoted past 'suspected' confidence, no matter how often they're
+    restated -- only provide a URL if it's real and you actually checked it,
+    never fabricate one just to raise confidence."""
+    return memory_save(scope, type_, content, tags, evidence_url)
 
 
 @tool
