@@ -15,10 +15,11 @@ from agent.tools import (
     read_file, write_file, list_dir, search_code,
     run_shell, memory_search, memory_save,
     memory_sync_embeddings, memory_semantic_search,
-    web_search,
+    web_search, curate_memory_context,
 )
 from agent.router import ModelRouter
 from agent import metrics
+CURATOR_MODEL_LABEL = "llama3.2:1b curator"
 
 
 @tool
@@ -212,6 +213,16 @@ class Session:
         if "No matching memories" in pre_hit:
             pre_hit = memory_semantic_search(user_input)
         memory_tier = _detect_memory_tier(pre_hit)
+
+        if memory_tier != "none":
+            curated = curate_memory_context(user_input, pre_hit)
+            if curated:
+                print(f"--- memory curated by {CURATOR_MODEL_LABEL}: kept relevant entries only ---")
+                pre_hit = curated
+            else:
+                print(f"--- memory curated by {CURATOR_MODEL_LABEL}: nothing relevant, dropping retrieval ---")
+                memory_tier = "none"
+
         memory_pre_hit = memory_tier != "none"
 
         agent = build_agent(model_name, category)

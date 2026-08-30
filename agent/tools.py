@@ -419,6 +419,46 @@ def memory_semantic_search(query: str, top: int = 5) -> str:
     return "No semantic matches found (checked hot, warm, and cold tiers)."
 
 
+CURATOR_MODEL = "llama3.2:1b"
+
+CURATION_PROMPT = """Task: {task}
+
+Retrieved memory entries:
+{candidates}
+
+Which of these entries, if any, are actually relevant and useful for
+answering the task above? Return ONLY the relevant entries, copied
+exactly as given, one per line. If none are relevant, respond with
+exactly: NONE
+
+Do not explain your reasoning. Do not add anything not in the original entries."""
+
+
+def curate_memory_context(task: str, raw_memory_text: str) -> str:
+    """Use a cheap model to filter retrieved memory down to what's actually
+    relevant before it reaches the main model -- fixes the common case
+    where irrelevant retrieved entries get injected as noise, wasting
+    tokens and sometimes misleading the model."""
+    if not raw_memory_text or "No matching memories" in raw_memory_text or \
+       "No semantic matches" in raw_memory_text:
+        return raw_memory_text
+
+    prompt = CURATION_PROMPT.format(task=task, candidates=raw_memory_text)
+    try:
+        resp = requests.post(
+            "http://localhost:11434/api/generate",
+            json={"model": CURATOR_MODEL, "prompt": prompt, "stream": False, "options": {"temperature": 0}},
+            timeout=30,
+        ).json()
+        curated = resp.get("response", "").strip()
+    except Exception:
+        return raw_memory_text  # curation failed -- fall back to raw, don't lose the retrieval entirely
+
+    if not curated or curated.upper().startswith("NONE"):
+        return ""
+    return curated
+
+
 def web_search(query: str, max_results: int = 5) -> str:
     try:
         results = DDGS().text(query, max_results=max_results)
