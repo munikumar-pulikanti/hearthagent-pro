@@ -19,7 +19,11 @@ CREATE TABLE IF NOT EXISTS turns (
     error_occurred INTEGER DEFAULT 0,
     assertion_flags TEXT DEFAULT '',
     input_tokens INTEGER DEFAULT 0,
-    output_tokens INTEGER DEFAULT 0
+    output_tokens INTEGER DEFAULT 0,
+    cascade_tier TEXT DEFAULT '',
+    escalated INTEGER DEFAULT 0,
+    cheap_attempt_tokens INTEGER DEFAULT 0,
+    capable_attempt_tokens INTEGER DEFAULT 0
 );
 """
 
@@ -34,16 +38,20 @@ def init_db():
 
 def log_turn(task_snippet, category, model, duration_seconds, tool_call_count=0,
              memory_pre_hit=False, memory_tier="none", error_occurred=False,
-             assertion_flags="", input_tokens=0, output_tokens=0):
+             assertion_flags="", input_tokens=0, output_tokens=0,
+             cascade_tier="", escalated=False, cheap_attempt_tokens=0,
+             capable_attempt_tokens=0):
     init_db()
     conn = sqlite3.connect(METRICS_DB)
     conn.execute(
         "INSERT INTO turns (task_snippet, category, model, duration_seconds, "
         "tool_call_count, memory_pre_hit, memory_tier, error_occurred, assertion_flags, "
-        "input_tokens, output_tokens) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "input_tokens, output_tokens, cascade_tier, escalated, cheap_attempt_tokens, "
+        "capable_attempt_tokens) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (task_snippet[:200], category, model, duration_seconds, tool_call_count,
          int(memory_pre_hit), memory_tier, int(error_occurred), assertion_flags,
-         input_tokens, output_tokens)
+         input_tokens, output_tokens, cascade_tier, int(escalated),
+         cheap_attempt_tokens, capable_attempt_tokens)
     )
     conn.commit()
     conn.close()

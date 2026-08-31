@@ -182,6 +182,41 @@ def check_assertions(final_content: str, tool_call_count: int, tool_names_called
     return flags
 
 
+FIDELITY_CHECKED_TOOLS = {"list_dir_tool", "search_code_tool", "memory_search_tool", "web_search_tool"}
+
+
+def check_tool_result_fidelity(final_content: str, messages: list) -> list:
+    """For tools that return a concrete, enumerable list (files, search
+    hits, memory entries), verify the model's narrative summary doesn't
+    mention items that don't actually appear in the real tool output.
+    Found via real testing: llama3.2:1b correctly executed list_dir_tool
+    but then fabricated two filenames in its own summary of the real
+    result. Deterministic, no extra LLM call."""
+    flags = []
+    if not final_content:
+        return flags
+
+    for msg in messages:
+        tool_name = getattr(msg, "name", None)
+        if tool_name not in FIDELITY_CHECKED_TOOLS:
+            continue
+        tool_content = getattr(msg, "content", "") or ""
+        if not tool_content or "No matches found" in tool_content or "No results found" in tool_content:
+            continue
+
+        real_lines = set(
+            l.strip().lstrip("fd").strip()
+            for l in tool_content.splitlines() if l.strip()
+        )
+        mentioned = set(re.findall(r'\b[\w][\w.-]*\.\w{1,6}\b', final_content))
+        fabricated = [m for m in mentioned if m not in real_lines and not any(m in rl for rl in real_lines)]
+
+        if fabricated:
+            flags.append(f"fabricated_items_in_summary:{','.join(sorted(fabricated)[:3])}")
+
+    return flags
+
+
 def _detect_memory_tier(pre_hit_text: str) -> str:
     """Infer which tier actually resolved a memory pre-check, from the
     markers memory_semantic_search already includes in its output."""
@@ -199,6 +234,62 @@ def _detect_memory_tier(pre_hit_text: str) -> str:
     return "none"
 
 
+CASCADE_CHEAP_MODEL = "llama3.2:1b"
+CASCADE_CAPABLE_MODEL = "llama3.1:8b"
+
+
+def _attempt(model_name: str, category: str, messages: list) -> dict:
+    """Run one cascade attempt with a given model. Returns everything
+    needed to decide whether to escalate and what to log, without
+    mutating the caller's history -- the caller decides what to keep."""
+    agent = build_agent(model_name, category)
+
+    try:
+        result = agent.invoke({"messages": messages}, config={"recursion_limit": 15})
+    except GraphRecursionError:
+        return {"error": "recursion_limit", "messages": messages}
+    except Exception as e:
+        return {"error": str(e), "messages": messages}
+
+    final_msg = result["messages"][-1]
+    tool_call_count = sum(len(getattr(m, "tool_calls", None) or []) for m in result["messages"])
+    tool_names_called = {
+        tc.get("name") for m in result["messages"]
+        for tc in (getattr(m, "tool_calls", None) or [])
+    }
+    input_tokens = sum((getattr(m, "usage_metadata", None) or {}).get("input_tokens", 0) or 0 for m in result["messages"])
+    output_tokens = sum((getattr(m, "usage_metadata", None) or {}).get("output_tokens", 0) or 0 for m in result["messages"])
+
+    tool_name, args = try_parse_manual_tool_call(final_msg.content or "")
+    if tool_name:
+        tool_result = TOOLS_BY_NAME[tool_name].invoke(args)
+        followup = result["messages"] + [
+            ("assistant", f"[executed {tool_name} manually after it was printed as text instead of called]"),
+            ("tool", str(tool_result)),
+        ]
+        try:
+            result2 = agent.invoke({"messages": followup}, config={"recursion_limit": 15})
+        except Exception:
+            result2 = result
+        input_tokens += sum((getattr(m, "usage_metadata", None) or {}).get("input_tokens", 0) or 0 for m in result2["messages"])
+        output_tokens += sum((getattr(m, "usage_metadata", None) or {}).get("output_tokens", 0) or 0 for m in result2["messages"])
+        final_content = result2["messages"][-1].content
+        out_messages = result2["messages"]
+    else:
+        final_content = final_msg.content
+        out_messages = result["messages"]
+
+    return {
+        "error": None,
+        "final_content": final_content,
+        "messages": out_messages,
+        "tool_call_count": tool_call_count,
+        "tool_names_called": tool_names_called,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+    }
+
+
 class Session:
     def __init__(self):
         self.router = ModelRouter()
@@ -206,8 +297,7 @@ class Session:
 
     def send(self, user_input: str) -> str:
         start = time.time()
-        model_name, category = self.router.route(user_input)
-        print(f"--- routed to: {model_name} (category: {category}) ---")
+        _, category = self.router.route(user_input)
 
         pre_hit = memory_search(user_input)
         if "No matching memories" in pre_hit:
@@ -225,8 +315,6 @@ class Session:
 
         memory_pre_hit = memory_tier != "none"
 
-        agent = build_agent(model_name, category)
-
         if memory_pre_hit:
             print(f"--- memory pre-check hit ({memory_tier}), injecting before model call ---")
             augmented_input = (
@@ -234,80 +322,87 @@ class Session:
                 f"[Relevant memory found before you were called -- use this if helpful, "
                 f"don't re-search unless it's insufficient:]\n{pre_hit}"
             )
-            history_len_before = len(self.history)
-            self.history.append(("user", augmented_input))
         else:
-            history_len_before = len(self.history)
-            self.history.append(("user", user_input))
+            augmented_input = user_input
 
-        error_occurred = False
-        try:
-            result = agent.invoke({"messages": self.history}, config={"recursion_limit": 15})
-        except GraphRecursionError:
-            error_occurred = True
+        base_messages = self.history + [("user", augmented_input)]
+
+        print(f"--- cascade: trying cheap tier ({CASCADE_CHEAP_MODEL}) ---")
+        cheap = _attempt(CASCADE_CHEAP_MODEL, category, base_messages)
+
+        cheap_tokens = 0
+        if cheap["error"] is None:
+            cheap_tokens = cheap["input_tokens"] + cheap["output_tokens"]
+            cheap_flags = (
+                check_assertions(cheap["final_content"], cheap["tool_call_count"], cheap["tool_names_called"])
+                + check_faithfulness(cheap["final_content"], memory_pre_hit, pre_hit)
+                + check_tool_result_fidelity(cheap["final_content"], cheap["messages"])
+            )
+        else:
+            cheap_flags = [f"cheap_tier_error:{cheap['error']}"]
+
+        escalated = bool(cheap["error"]) or bool(cheap_flags)
+
+        if not escalated:
+            print(f"--- cascade: cheap tier passed checks, no escalation ---")
+            for m in cheap["messages"][len(base_messages):]:
+                m.pretty_print()
+            self.history = cheap["messages"]
+            final_content = cheap["final_content"]
             duration = time.time() - start
             metrics.log_turn(
-                task_snippet=user_input, category=category, model=model_name,
-                duration_seconds=duration, memory_pre_hit=memory_pre_hit,
-                memory_tier=memory_tier, error_occurred=True,
-                assertion_flags="hit_recursion_limit",
+                task_snippet=user_input, category=category, model=CASCADE_CHEAP_MODEL,
+                duration_seconds=duration, tool_call_count=cheap["tool_call_count"],
+                memory_pre_hit=memory_pre_hit, memory_tier=memory_tier,
+                error_occurred=False, assertion_flags="",
+                input_tokens=cheap["input_tokens"], output_tokens=cheap["output_tokens"],
+                cascade_tier="cheap", escalated=False,
+                cheap_attempt_tokens=cheap_tokens, capable_attempt_tokens=0,
             )
-            return (f"I got stuck in a loop after too many steps trying to answer "
-                    f"that (limit: 15). Try rephrasing, or breaking it into a "
-                    f"smaller task.")
-        except Exception:
-            error_occurred = True
+            return final_content
+
+        print(f"--- cascade: cheap tier failed checks ({', '.join(cheap_flags)}), escalating to {CASCADE_CAPABLE_MODEL} ---")
+        capable = _attempt(CASCADE_CAPABLE_MODEL, category, base_messages)
+
+        if capable["error"] is not None:
             duration = time.time() - start
             metrics.log_turn(
-                task_snippet=user_input, category=category, model=model_name,
+                task_snippet=user_input, category=category, model=CASCADE_CAPABLE_MODEL,
                 duration_seconds=duration, memory_pre_hit=memory_pre_hit,
                 memory_tier=memory_tier, error_occurred=True,
+                assertion_flags="capable_tier_error:" + capable["error"],
+                cascade_tier="capable", escalated=True,
+                cheap_attempt_tokens=cheap_tokens, capable_attempt_tokens=0,
             )
-            raise
+            if capable["error"] == "recursion_limit":
+                return "I got stuck in a loop after too many steps trying to answer that. Try rephrasing, or breaking it into a smaller task."
+            raise RuntimeError(capable["error"])
 
-        for m in result["messages"][history_len_before:]:
+        capable_flags = (
+            check_assertions(capable["final_content"], capable["tool_call_count"], capable["tool_names_called"])
+            + check_faithfulness(capable["final_content"], memory_pre_hit, pre_hit)
+            + check_tool_result_fidelity(capable["final_content"], capable["messages"])
+        )
+        if capable_flags:
+            print(f"--- ASSERTION FAILURES (capable tier): {', '.join(capable_flags)} ---")
+
+        for m in capable["messages"][len(base_messages):]:
             m.pretty_print()
 
-        final_msg = result["messages"][-1]
-        tool_call_count = sum(
-            len(getattr(m, "tool_calls", None) or []) for m in result["messages"]
-        )
-        tool_names_called = {tc.get("name") for m in result["messages"] for tc in (getattr(m, "tool_calls", None) or [])}
-        input_tokens = sum((getattr(m, "usage_metadata", None) or {}).get("input_tokens", 0) or 0 for m in result["messages"])
-        output_tokens = sum((getattr(m, "usage_metadata", None) or {}).get("output_tokens", 0) or 0 for m in result["messages"])
-        tool_name, args = try_parse_manual_tool_call(final_msg.content or "")
-
-        if tool_name:
-            print(f"--- manual fallback: model printed a tool call as text, executing {tool_name}({args}) ---")
-            tool_result = TOOLS_BY_NAME[tool_name].invoke(args)
-            self.history = result["messages"] + [
-                ("assistant", f"[executed {tool_name} manually after it was printed as text instead of called]"),
-                ("tool", str(tool_result)),
-            ]
-            result2 = agent.invoke({"messages": self.history}, config={"recursion_limit": 15})
-            for m in result2["messages"][len(result["messages"]):]:
-                m.pretty_print()
-            self.history = result2["messages"]
-            final_content = result2["messages"][-1].content
-        else:
-            self.history = result["messages"]
-            final_content = final_msg.content
-
+        self.history = capable["messages"]
+        final_content = capable["final_content"]
+        capable_tokens = capable["input_tokens"] + capable["output_tokens"]
         duration = time.time() - start
-        faithfulness_flags = check_faithfulness(final_content, memory_pre_hit, pre_hit)
-        assertion_flags = check_assertions(final_content, tool_call_count, tool_names_called)
-        all_flags = assertion_flags + faithfulness_flags
-        if all_flags:
-            print(f"--- ASSERTION FAILURES: {', '.join(all_flags)} ---")
 
         metrics.log_turn(
-            task_snippet=user_input, category=category, model=model_name,
-            duration_seconds=duration, tool_call_count=tool_call_count,
+            task_snippet=user_input, category=category, model=CASCADE_CAPABLE_MODEL,
+            duration_seconds=duration, tool_call_count=capable["tool_call_count"],
             memory_pre_hit=memory_pre_hit, memory_tier=memory_tier,
-            error_occurred=error_occurred, assertion_flags=",".join(all_flags),
-            input_tokens=input_tokens, output_tokens=output_tokens,
+            error_occurred=False, assertion_flags="escalated_due_to:" + ",".join(cheap_flags) + (";capable_flags:" + ",".join(capable_flags) if capable_flags else ""),
+            input_tokens=capable["input_tokens"], output_tokens=capable["output_tokens"],
+            cascade_tier="capable", escalated=True,
+            cheap_attempt_tokens=cheap_tokens, capable_attempt_tokens=capable_tokens,
         )
-
         return final_content
 
 
