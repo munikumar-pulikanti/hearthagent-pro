@@ -168,13 +168,19 @@ def all_eval_results():
     return [dict(r) for r in rows]
 
 
+ESCALATION_RATE_WINDOW = 50  # most recent turns per category, not all-time
+
+
 def category_escalation_rate(category: str) -> dict:
-    """Real, all-time escalation rate for a category -- no fixed window.
-    Used by the shortcut layer to decide whether cheap tier is worth
-    attempting for most traffic in this category. Always based on every
-    real data point seen so far, not a lookback period that can go stale."""
-    turns = all_turns()
-    category_turns = [t for t in turns if t["category"] == category]
+    """Rolling recent-window escalation rate for a category -- deliberately
+    NOT an all-time average. An unweighted all-time average has a real flaw:
+    as history accumulates, fresh evidence from the shortcut's own holdout
+    traffic gets diluted into irrelevance by a growing pile of old data,
+    even though the holdout keeps running. Using only the most recent
+    ESCALATION_RATE_WINDOW turns means new evidence always has real,
+    consistent influence on the number, not shrinking influence over time."""
+    turns = all_turns()  # already ordered by id DESC (most recent first)
+    category_turns = [t for t in turns if t["category"] == category][:ESCALATION_RATE_WINDOW]
     if not category_turns:
         return {"sample_size": 0, "escalation_rate": None}
     escalated_count = sum(1 for t in category_turns if t["escalated"])
