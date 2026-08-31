@@ -5,6 +5,8 @@ import json
 import os
 import re
 import time
+import random
+import random
 
 from langchain_ollama import ChatOllama
 from langchain_core.tools import tool
@@ -236,6 +238,9 @@ def _detect_memory_tier(pre_hit_text: str) -> str:
 
 CASCADE_CHEAP_MODEL = "llama3.2:1b"
 CASCADE_CAPABLE_MODEL = "llama3.1:8b"
+SHORTCUT_MIN_SAMPLES = 20
+SHORTCUT_ESCALATION_THRESHOLD = 0.8
+SHORTCUT_SAMPLE_RATE = 0.2
 
 
 def _attempt(model_name: str, category: str, messages: list) -> dict:
@@ -326,6 +331,57 @@ class Session:
             augmented_input = user_input
 
         base_messages = self.history + [("user", augmented_input)]
+
+        stats = metrics.category_escalation_rate(category)
+        shortcut_eligible = (
+            stats["sample_size"] >= SHORTCUT_MIN_SAMPLES
+            and stats["escalation_rate"] is not None
+            and stats["escalation_rate"] >= SHORTCUT_ESCALATION_THRESHOLD
+        )
+        skip_cheap_this_time = shortcut_eligible and random.random() > SHORTCUT_SAMPLE_RATE
+
+        if skip_cheap_this_time:
+            print(f"--- shortcut: category '{category}' escalates {stats['escalation_rate']:.0%} of the time "
+                  f"(n={stats['sample_size']}), skipping cheap tier this turn ---")
+            capable = _attempt(CASCADE_CAPABLE_MODEL, category, base_messages)
+            if capable["error"] is not None:
+                duration = time.time() - start
+                metrics.log_turn(
+                    task_snippet=user_input, category=category, model=CASCADE_CAPABLE_MODEL,
+                    duration_seconds=duration, memory_pre_hit=memory_pre_hit,
+                    memory_tier=memory_tier, error_occurred=True,
+                    assertion_flags="capable_tier_error:" + capable["error"],
+                    cascade_tier="capable", escalated=True,
+                    cheap_attempt_tokens=0, capable_attempt_tokens=0,
+                )
+                if capable["error"] == "recursion_limit":
+                    return "I got stuck in a loop after too many steps trying to answer that. Try rephrasing, or breaking it into a smaller task."
+                raise RuntimeError(capable["error"])
+
+            capable_flags = (
+                check_assertions(capable["final_content"], capable["tool_call_count"], capable["tool_names_called"])
+                + check_faithfulness(capable["final_content"], memory_pre_hit, pre_hit)
+                + check_tool_result_fidelity(capable["final_content"], capable["messages"])
+            )
+            if capable_flags:
+                print(f"--- ASSERTION FAILURES (capable tier, shortcut path): {', '.join(capable_flags)} ---")
+
+            for m in capable["messages"][len(base_messages):]:
+                m.pretty_print()
+
+            self.history = capable["messages"]
+            capable_tokens = capable["input_tokens"] + capable["output_tokens"]
+            duration = time.time() - start
+            metrics.log_turn(
+                task_snippet=user_input, category=category, model=CASCADE_CAPABLE_MODEL,
+                duration_seconds=duration, tool_call_count=capable["tool_call_count"],
+                memory_pre_hit=memory_pre_hit, memory_tier=memory_tier,
+                error_occurred=False, assertion_flags="shortcut_skip:" + ",".join(capable_flags) if capable_flags else "shortcut_skip",
+                input_tokens=capable["input_tokens"], output_tokens=capable["output_tokens"],
+                cascade_tier="capable", escalated=True,
+                cheap_attempt_tokens=0, capable_attempt_tokens=capable_tokens,
+            )
+            return capable["final_content"]
 
         print(f"--- cascade: trying cheap tier ({CASCADE_CHEAP_MODEL}) ---")
         cheap = _attempt(CASCADE_CHEAP_MODEL, category, base_messages)

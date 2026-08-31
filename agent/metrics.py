@@ -166,3 +166,19 @@ def all_eval_results():
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+def category_escalation_rate(category: str) -> dict:
+    """Real, all-time escalation rate for a category -- no fixed window.
+    Used by the shortcut layer to decide whether cheap tier is worth
+    attempting for most traffic in this category. Always based on every
+    real data point seen so far, not a lookback period that can go stale."""
+    turns = all_turns()
+    category_turns = [t for t in turns if t["category"] == category]
+    if not category_turns:
+        return {"sample_size": 0, "escalation_rate": None}
+    escalated_count = sum(1 for t in category_turns if t["escalated"])
+    return {
+        "sample_size": len(category_turns),
+        "escalation_rate": escalated_count / len(category_turns),
+    }
