@@ -352,7 +352,7 @@ class Session:
                     memory_tier=memory_tier, error_occurred=True,
                     assertion_flags="capable_tier_error:" + capable["error"],
                     cascade_tier="capable", escalated=True,
-                    cheap_attempt_tokens=0, capable_attempt_tokens=0,
+                    cheap_attempt_tokens=None, capable_attempt_tokens=0,
                 )
                 if capable["error"] == "recursion_limit":
                     return "I got stuck in a loop after too many steps trying to answer that. Try rephrasing, or breaking it into a smaller task."
@@ -379,7 +379,7 @@ class Session:
                 error_occurred=False, assertion_flags="shortcut_skip:" + ",".join(capable_flags) if capable_flags else "shortcut_skip",
                 input_tokens=capable["input_tokens"], output_tokens=capable["output_tokens"],
                 cascade_tier="capable", escalated=True,
-                cheap_attempt_tokens=0, capable_attempt_tokens=capable_tokens,
+                cheap_attempt_tokens=None, capable_attempt_tokens=capable_tokens,
             )
             return capable["final_content"]
 
