@@ -180,7 +180,17 @@ def category_escalation_rate(category: str) -> dict:
     ESCALATION_RATE_WINDOW turns means new evidence always has real,
     consistent influence on the number, not shrinking influence over time."""
     turns = all_turns()  # already ordered by id DESC (most recent first)
-    category_turns = [t for t in turns if t["category"] == category][:ESCALATION_RATE_WINDOW]
+    # Only count turns where the cheap tier was actually attempted.
+    # Shortcut-skipped turns (cheap_attempt_tokens is None) are always
+    # logged as escalated=True by construction, not because cheap tier
+    # was tried and failed. Including them would make the rate
+    # self-reinforcing: shortcut fires -> more fake-escalated rows ->
+    # rate stays pinned high -> shortcut keeps firing, even if the
+    # underlying model improved and cheap tier would now succeed.
+    category_turns = [
+        t for t in turns
+        if t["category"] == category and t["cheap_attempt_tokens"] is not None
+    ][:ESCALATION_RATE_WINDOW]
     if not category_turns:
         return {"sample_size": 0, "escalation_rate": None}
     escalated_count = sum(1 for t in category_turns if t["escalated"])
