@@ -13,6 +13,7 @@ import yaml
 from sentence_transformers import SentenceTransformer
 from ddgs import DDGS
 import requests
+import re
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -400,9 +401,9 @@ def memory_semantic_search(query: str, top: int = 5) -> str:
     metas = results.get("metadatas", [[]])[0]
     dists = results.get("distances", [[]])[0]
 
-    hot_hits = [(d, m) for d, m, dist in zip(docs, metas, dists) if (1 - dist) >= HOT_ACCEPT_THRESHOLD]
+    hot_hits = [(d, m, 1 - dist) for d, m, dist in zip(docs, metas, dists) if (1 - dist) >= HOT_ACCEPT_THRESHOLD]
     if hot_hits:
-        return "\n".join(f"[{m['scope']}/{m['type']}] {d}" for d, m in hot_hits)
+        return "\n".join(f"[{m['scope']}/{m['type']}, sim={sim:.2f}] {d}" for d, m, sim in hot_hits)
 
     warm_hits = _warm_semantic_scan(query)
     if warm_hits:
@@ -441,65 +442,117 @@ If none are useful, respond with exactly: NONE
 Do not explain your reasoning. Do not add anything not in the original entries."""
 
 
-def curate_memory_context(task: str, raw_memory_text: str) -> str:
-    """Use a cheap model to filter retrieved memory down to what's actually
-    relevant before it reaches the main model -- fixes the common case
-    where irrelevant retrieved entries get injected as noise, wasting
-    tokens and sometimes misleading the model.
+CURATOR_AUTO_ACCEPT_THRESHOLD = 0.75  # real similarity score, skip the LLM entirely above this
+CURATOR_FALLBACK_MODEL = "llama3.1:8b"  # cascade target when cheap curation fails verification
 
-    Verifies the curator's output against the real input candidates
-    rather than trusting it -- found via real testing that the curator
-    can (a) echo back an irrelevant entry alongside a stray 'NONE' token,
-    producing a malformed response that isn't caught by a simple
-    startswith('NONE') check, and (b) paraphrase/shorten an entry despite
-    being explicitly instructed to copy it verbatim, which risks silently
-    dropping information or introducing a curator-level fabrication.
-    Only output lines that are a genuine substring match of a real input
-    candidate line are kept -- fabricated or paraphrased lines are
-    discarded, same verify-don't-trust philosophy as the tool-result
-    fidelity check."""
-    if not raw_memory_text or "No matching memories" in raw_memory_text or \
-       "No semantic matches" in raw_memory_text:
-        return raw_memory_text
 
-    candidate_lines = [l.strip() for l in raw_memory_text.splitlines() if l.strip()]
+def _words(text: str) -> set:
+    """Extracts real content words, ignoring the [scope/type, sim=X.XX]
+    metadata tag -- found via testing that the tag alone can trivially
+    satisfy a substring/overlap check, letting a curator response that
+    dropped all real content still pass verification."""
+    content_only = re.sub(r"^\[[^\]]*\]\s*", "", text.strip())
+    return set(w.lower().strip(".,;:!?()[]{}\"'") for w in content_only.split() if len(w) > 3)
 
-    prompt = CURATION_PROMPT.format(task=task, candidates=raw_memory_text)
-    try:
-        resp = requests.post(
-            "http://localhost:11434/api/generate",
-            json={"model": CURATOR_MODEL, "prompt": prompt, "stream": False, "options": {"temperature": 0}},
-            timeout=30,
-        ).json()
-        curated = resp.get("response", "").strip()
-    except Exception:
-        return raw_memory_text  # curation failed -- fall back to raw, don't lose the retrieval entirely
 
-    if not curated:
-        return ""
-
-    verified_lines = []
+def _fuzzy_verify(curated: str, candidate_lines: list) -> list:
+    """Only keep curator output lines that genuinely overlap a real
+    candidate -- rejects fabricated or heavily paraphrased lines."""
+    verified = []
     for out_line in curated.splitlines():
         out_line = out_line.strip()
         if not out_line or out_line.upper() == "NONE":
             continue
-        out_words = set(w.lower().strip(".,;:!?()[]{}\"'") for w in out_line.split() if len(w) > 3)
+        out_words = _words(out_line)
         if not out_words:
             continue
-        # Fuzzy match: most of this line's real words must appear in SOME
-        # single candidate line. Lenient enough for minor rewording,
-        # strict enough to reject a fabricated or heavily paraphrased line.
         best_overlap = 0.0
         for cand in candidate_lines:
-            cand_words = set(w.lower().strip(".,;:!?()[]{}\"'") for w in cand.split() if len(w) > 3)
+            cand_words = _words(cand)
             if not cand_words:
                 continue
             overlap = len(out_words & cand_words) / len(out_words)
             best_overlap = max(best_overlap, overlap)
         if best_overlap >= 0.6:
-            verified_lines.append(out_line)
+            verified.append(out_line)
+    return verified
 
-    return "\n".join(verified_lines)
+
+def _run_curator_pass(model: str, task: str, candidates_text: str, candidate_lines: list) -> list:
+    """One curation attempt with a given model, verified against real
+    candidates. Returns a list of verified-kept lines (possibly empty)."""
+    prompt = CURATION_PROMPT.format(task=task, candidates=candidates_text)
+    try:
+        resp = requests.post(
+            "http://localhost:11434/api/generate",
+            json={"model": model, "prompt": prompt, "stream": False, "options": {"temperature": 0}},
+            timeout=30,
+        ).json()
+        curated = resp.get("response", "").strip()
+    except Exception:
+        return None  # signals "curation call itself failed" -- different from "found nothing"
+    if not curated:
+        return []
+    return _fuzzy_verify(curated, candidate_lines)
+
+
+def curate_memory_context(task: str, raw_memory_text: str) -> str:
+    """Filters retrieved memory down to what's actually relevant, in two
+    layers:
+
+    1. Deterministic: candidates carrying a real similarity score
+       (from memory_semantic_search's hot-tier results, marked
+       'sim=X.XX') above CURATOR_AUTO_ACCEPT_THRESHOLD are auto-kept --
+       no LLM judgment call needed at all for clearly-relevant matches.
+       This removes the exact failure class found in testing: a cheap
+       model making a wrong keep/drop call on a single ambiguous
+       candidate. High-confidence matches never reach that judgment call.
+
+    2. LLM curation, only for genuinely ambiguous candidates (no score,
+       or a score below the auto-accept bar) -- and even then, verified
+       against the real candidate text rather than trusted, with a
+       cascade fallback to a more capable model if the cheap curator's
+       output doesn't survive verification (mirrors the main task
+       cascade's own escalate-on-real-failure design)."""
+    if not raw_memory_text or "No matching memories" in raw_memory_text or \
+       "No semantic matches" in raw_memory_text:
+        return raw_memory_text
+
+    all_lines = [l.strip() for l in raw_memory_text.splitlines() if l.strip()]
+
+    auto_kept = []
+    needs_review = []
+    for line in all_lines:
+        m = re.search(r"sim=([0-9.]+)", line)
+        if m and float(m.group(1)) >= CURATOR_AUTO_ACCEPT_THRESHOLD:
+            auto_kept.append(line)
+        else:
+            needs_review.append(line)
+
+    if not needs_review:
+        return "\n".join(auto_kept)
+
+    review_text = "\n".join(needs_review)
+    cheap_result = _run_curator_pass(CURATOR_MODEL, task, review_text, needs_review)
+
+    if cheap_result is None:
+        # Curation call itself failed (network/timeout) -- fall back to
+        # returning everything under review rather than silently losing it.
+        return "\n".join(auto_kept + needs_review)
+
+    if cheap_result:
+        return "\n".join(auto_kept + cheap_result)
+
+    # Cheap curator found nothing usable -- could be a correct "none of
+    # these are relevant" call, or the cheap model failing on an
+    # ambiguous case (the real failure mode found in testing). Escalate
+    # to a more capable model for a second opinion rather than trusting
+    # the cheap model's empty result outright.
+    capable_result = _run_curator_pass(CURATOR_FALLBACK_MODEL, task, review_text, needs_review)
+    if capable_result is None or not capable_result:
+        return "\n".join(auto_kept)  # both agree, or capable also failed/confirmed nothing
+
+    return "\n".join(auto_kept + capable_result)
 
 
 def web_search(query: str, max_results: int = 5) -> str:
