@@ -426,10 +426,17 @@ CURATION_PROMPT = """Task: {task}
 Retrieved memory entries:
 {candidates}
 
-Which of these entries, if any, are actually relevant and useful for
-answering the task above? Return ONLY the relevant entries, copied
-exactly as given, one per line. If none are relevant, respond with
-exactly: NONE
+Which of these entries, if any, are actually USEFUL for answering the
+task above -- not just about the same general topic, but something that
+would actually help produce a correct answer.
+
+Example: if the task asks about Python's try/except syntax, an entry
+about "Python was created in 1991" mentions Python but is NOT useful --
+it doesn't help answer the actual question. Do not keep an entry just
+because it shares a keyword with the task.
+
+Return ONLY the useful entries, copied exactly as given, one per line.
+If none are useful, respond with exactly: NONE
 
 Do not explain your reasoning. Do not add anything not in the original entries."""
 
@@ -438,10 +445,24 @@ def curate_memory_context(task: str, raw_memory_text: str) -> str:
     """Use a cheap model to filter retrieved memory down to what's actually
     relevant before it reaches the main model -- fixes the common case
     where irrelevant retrieved entries get injected as noise, wasting
-    tokens and sometimes misleading the model."""
+    tokens and sometimes misleading the model.
+
+    Verifies the curator's output against the real input candidates
+    rather than trusting it -- found via real testing that the curator
+    can (a) echo back an irrelevant entry alongside a stray 'NONE' token,
+    producing a malformed response that isn't caught by a simple
+    startswith('NONE') check, and (b) paraphrase/shorten an entry despite
+    being explicitly instructed to copy it verbatim, which risks silently
+    dropping information or introducing a curator-level fabrication.
+    Only output lines that are a genuine substring match of a real input
+    candidate line are kept -- fabricated or paraphrased lines are
+    discarded, same verify-don't-trust philosophy as the tool-result
+    fidelity check."""
     if not raw_memory_text or "No matching memories" in raw_memory_text or \
        "No semantic matches" in raw_memory_text:
         return raw_memory_text
+
+    candidate_lines = [l.strip() for l in raw_memory_text.splitlines() if l.strip()]
 
     prompt = CURATION_PROMPT.format(task=task, candidates=raw_memory_text)
     try:
@@ -454,9 +475,31 @@ def curate_memory_context(task: str, raw_memory_text: str) -> str:
     except Exception:
         return raw_memory_text  # curation failed -- fall back to raw, don't lose the retrieval entirely
 
-    if not curated or curated.upper().startswith("NONE"):
+    if not curated:
         return ""
-    return curated
+
+    verified_lines = []
+    for out_line in curated.splitlines():
+        out_line = out_line.strip()
+        if not out_line or out_line.upper() == "NONE":
+            continue
+        out_words = set(w.lower().strip(".,;:!?()[]{}\"'") for w in out_line.split() if len(w) > 3)
+        if not out_words:
+            continue
+        # Fuzzy match: most of this line's real words must appear in SOME
+        # single candidate line. Lenient enough for minor rewording,
+        # strict enough to reject a fabricated or heavily paraphrased line.
+        best_overlap = 0.0
+        for cand in candidate_lines:
+            cand_words = set(w.lower().strip(".,;:!?()[]{}\"'") for w in cand.split() if len(w) > 3)
+            if not cand_words:
+                continue
+            overlap = len(out_words & cand_words) / len(out_words)
+            best_overlap = max(best_overlap, overlap)
+        if best_overlap >= 0.6:
+            verified_lines.append(out_line)
+
+    return "\n".join(verified_lines)
 
 
 def web_search(query: str, max_results: int = 5) -> str:
