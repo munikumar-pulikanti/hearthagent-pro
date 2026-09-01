@@ -3,6 +3,7 @@
 import json
 import os
 import subprocess
+import shlex
 import sqlite3
 from pathlib import Path
 
@@ -88,12 +89,29 @@ def search_code(query: str, path: str = ".") -> str:
 
 
 def run_shell(command: str) -> str:
-    first_word = command.strip().split()[0] if command.strip() else ""
+    """Runs an allowlisted command WITHOUT a shell. Found via external
+    review: the previous version used shell=True with only a first-word
+    allowlist check, meaning 'git log && rm -rf ~' passed the check
+    (git is allowed) and the shell still executed the whole chained
+    string. Parsing with shlex and running with shell=False means shell
+    metacharacters (&&, ;, |, $(), backticks) are never interpreted at
+    all -- they become inert literal arguments to the allowed binary,
+    not shell operators."""
+    try:
+        args = shlex.split(command)
+    except ValueError as e:
+        return f"REJECTED: could not parse command safely: {e}"
+
+    if not args:
+        return "REJECTED: empty command"
+
+    first_word = args[0]
     if first_word not in ALLOWED_SHELL_COMMANDS:
         return f"REJECTED: '{first_word}' is not allowlisted ({sorted(ALLOWED_SHELL_COMMANDS)})"
+
     try:
         result = subprocess.run(
-            command, shell=True, capture_output=True, text=True,
+            args, shell=False, capture_output=True, text=True,
             timeout=30, cwd=PROJECT_ROOT
         )
         output = result.stdout + result.stderr
