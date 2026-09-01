@@ -455,9 +455,22 @@ def _words(text: str) -> set:
     return set(w.lower().strip(".,;:!?()[]{}\"'") for w in content_only.split() if len(w) > 3)
 
 
+MIN_CANDIDATE_COVERAGE = 0.4  # output must retain this much of the matched candidate's real content
+
+
 def _fuzzy_verify(curated: str, candidate_lines: list) -> list:
     """Only keep curator output lines that genuinely overlap a real
-    candidate -- rejects fabricated or heavily paraphrased lines."""
+    candidate AND retain a meaningful share of its actual content.
+
+    Checking overlap alone (what fraction of the output's words are
+    real) isn't enough -- found via testing that a single-word output
+    trivially scores a perfect overlap against any candidate containing
+    that word, letting a curator response that shredded a full useful
+    sentence down to one keyword pass verification as if nothing was
+    lost. Coverage (what fraction of the CANDIDATE's real content
+    survived in the output) catches exactly this: a full, accurately
+    preserved sentence has high coverage; a single extracted keyword
+    does not, even though both can have perfect overlap."""
     verified = []
     for out_line in curated.splitlines():
         out_line = out_line.strip()
@@ -466,14 +479,17 @@ def _fuzzy_verify(curated: str, candidate_lines: list) -> list:
         out_words = _words(out_line)
         if not out_words:
             continue
-        best_overlap = 0.0
+        best_score = 0.0
         for cand in candidate_lines:
             cand_words = _words(cand)
             if not cand_words:
                 continue
-            overlap = len(out_words & cand_words) / len(out_words)
-            best_overlap = max(best_overlap, overlap)
-        if best_overlap >= 0.6:
+            shared = len(out_words & cand_words)
+            overlap = shared / len(out_words)
+            coverage = shared / len(cand_words)
+            if overlap >= 0.6 and coverage >= MIN_CANDIDATE_COVERAGE:
+                best_score = max(best_score, min(overlap, 1.0))
+        if best_score > 0:
             verified.append(out_line)
     return verified
 
