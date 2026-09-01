@@ -1,6 +1,7 @@
 """Usage metrics for hearthagent-pro -- tracks routing decisions, model
 usage, and which memory tier (hot/warm/cold/none) resolved each lookup."""
 import sqlite3
+import requests
 from pathlib import Path
 
 METRICS_DB = Path.home() / ".ai-memory-vault" / "hearthagent_pro_metrics.db"
@@ -21,11 +22,36 @@ CREATE TABLE IF NOT EXISTS turns (
     input_tokens INTEGER DEFAULT 0,
     output_tokens INTEGER DEFAULT 0,
     cascade_tier TEXT DEFAULT '',
+    shortcut_fired INTEGER DEFAULT 0,
+    model_digest TEXT DEFAULT '',
     escalated INTEGER DEFAULT 0,
     cheap_attempt_tokens INTEGER DEFAULT 0,
     capable_attempt_tokens INTEGER DEFAULT 0
 );
 """
+
+
+_model_digest_cache = {}
+
+
+def get_model_digest(model_name: str) -> str:
+    """Fetch a model's real digest from Ollama's /api/tags, cached per
+    process. Logging this alongside the model name means a silent model
+    update (same tag, different underlying weights) is at least visible
+    in the data, even if nothing automatically reacts to it."""
+    if model_name in _model_digest_cache:
+        return _model_digest_cache[model_name]
+    digest = ""
+    try:
+        resp = requests.get("http://localhost:11434/api/tags", timeout=5).json()
+        for m in resp.get("models", []):
+            if m.get("name") == model_name or m.get("model") == model_name:
+                digest = m.get("digest", "")[:12]  # short form is enough to detect a change
+                break
+    except Exception:
+        pass
+    _model_digest_cache[model_name] = digest
+    return digest
 
 
 def init_db():
@@ -40,18 +66,20 @@ def log_turn(task_snippet, category, model, duration_seconds, tool_call_count=0,
              memory_pre_hit=False, memory_tier="none", error_occurred=False,
              assertion_flags="", input_tokens=0, output_tokens=0,
              cascade_tier="", escalated=False, cheap_attempt_tokens=0,
-             capable_attempt_tokens=0):
+             capable_attempt_tokens=0, shortcut_fired=False):
     init_db()
+    model_digest = get_model_digest(model)
     conn = sqlite3.connect(METRICS_DB)
     conn.execute(
         "INSERT INTO turns (task_snippet, category, model, duration_seconds, "
         "tool_call_count, memory_pre_hit, memory_tier, error_occurred, assertion_flags, "
         "input_tokens, output_tokens, cascade_tier, escalated, cheap_attempt_tokens, "
-        "capable_attempt_tokens) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "capable_attempt_tokens, shortcut_fired, model_digest) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (task_snippet[:200], category, model, duration_seconds, tool_call_count,
          int(memory_pre_hit), memory_tier, int(error_occurred), assertion_flags,
          input_tokens, output_tokens, cascade_tier, int(escalated),
-         cheap_attempt_tokens, capable_attempt_tokens)
+         cheap_attempt_tokens, capable_attempt_tokens, int(shortcut_fired), model_digest)
     )
     conn.commit()
     conn.close()
@@ -192,9 +220,29 @@ def category_escalation_rate(category: str) -> dict:
         if t["category"] == category and t["cheap_attempt_tokens"] is not None
     ][:ESCALATION_RATE_WINDOW]
     if not category_turns:
-        return {"sample_size": 0, "escalation_rate": None}
+        return {"sample_size": 0, "escalation_rate": None, "escalation_rate_lower_bound": None}
     escalated_count = sum(1 for t in category_turns if t["escalated"])
+    n = len(category_turns)
+    raw_rate = escalated_count / n
+    lower_bound = _wilson_lower_bound(escalated_count, n)
     return {
-        "sample_size": len(category_turns),
-        "escalation_rate": escalated_count / len(category_turns),
+        "sample_size": n,
+        "escalation_rate": raw_rate,
+        "escalation_rate_lower_bound": lower_bound,
     }
+
+
+def _wilson_lower_bound(successes: int, n: int, z: float = 1.96) -> float:
+    """95% Wilson score interval lower bound for a proportion. Using this
+    instead of the raw fraction means small samples can't thrash a
+    threshold-based decision purely from chance: a true underlying rate
+    of, say, 65% can easily show 80%+ in a sample of 20 by luck alone.
+    The lower bound asks 'am I actually confident the true rate clears
+    the threshold', not just 'did this one sample clear it'."""
+    if n == 0:
+        return 0.0
+    p_hat = successes / n
+    denom = 1 + z * z / n
+    center = p_hat + z * z / (2 * n)
+    margin = z * ((p_hat * (1 - p_hat) / n + z * z / (4 * n * n)) ** 0.5)
+    return max(0.0, (center - margin) / denom)

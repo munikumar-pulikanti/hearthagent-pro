@@ -335,14 +335,15 @@ class Session:
         stats = metrics.category_escalation_rate(category)
         shortcut_eligible = (
             stats["sample_size"] >= SHORTCUT_MIN_SAMPLES
-            and stats["escalation_rate"] is not None
-            and stats["escalation_rate"] >= SHORTCUT_ESCALATION_THRESHOLD
+            and stats["escalation_rate_lower_bound"] is not None
+            and stats["escalation_rate_lower_bound"] >= SHORTCUT_ESCALATION_THRESHOLD
         )
         skip_cheap_this_time = shortcut_eligible and random.random() > SHORTCUT_SAMPLE_RATE
 
         if skip_cheap_this_time:
             print(f"--- shortcut: category '{category}' escalates {stats['escalation_rate']:.0%} of the time "
-                  f"(n={stats['sample_size']}), skipping cheap tier this turn ---")
+                  f"(95% confidence lower bound: {stats['escalation_rate_lower_bound']:.0%}, n={stats['sample_size']}), "
+                  f"skipping cheap tier this turn ---")
             capable = _attempt(CASCADE_CAPABLE_MODEL, category, base_messages)
             if capable["error"] is not None:
                 duration = time.time() - start
@@ -351,7 +352,7 @@ class Session:
                     duration_seconds=duration, memory_pre_hit=memory_pre_hit,
                     memory_tier=memory_tier, error_occurred=True,
                     assertion_flags="capable_tier_error:" + capable["error"],
-                    cascade_tier="capable", escalated=True,
+                    cascade_tier="capable", escalated=True, shortcut_fired=True,
                     cheap_attempt_tokens=None, capable_attempt_tokens=0,
                 )
                 if capable["error"] == "recursion_limit":
@@ -378,7 +379,7 @@ class Session:
                 memory_pre_hit=memory_pre_hit, memory_tier=memory_tier,
                 error_occurred=False, assertion_flags="shortcut_skip:" + ",".join(capable_flags) if capable_flags else "shortcut_skip",
                 input_tokens=capable["input_tokens"], output_tokens=capable["output_tokens"],
-                cascade_tier="capable", escalated=True,
+                cascade_tier="capable", escalated=True, shortcut_fired=True,
                 cheap_attempt_tokens=None, capable_attempt_tokens=capable_tokens,
             )
             return capable["final_content"]
