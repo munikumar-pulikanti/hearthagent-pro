@@ -133,3 +133,68 @@ class TestDigestResetOnModelSwap:
             "rate after a simulated model swap -- the shortcut would stay "
             "artificially alive on the previous model's stats"
         )
+
+
+class TestConfigFingerprintCoversPromptAndTools:
+    """Regression: filtering escalation-rate history by model digest
+    alone was still incomplete -- a system prompt edit or a tool being
+    added/changed/removed shifts the win rate just as much as a model
+    weight change does. compute_config_fingerprint combines model
+    digest + normalized system prompt + tool schema into one
+    fingerprint, so ANY of those changing correctly invalidates stale
+    accumulated stats, not just a weight swap."""
+
+    def test_stale_config_fingerprint_rows_are_excluded(self):
+        import uuid
+        from agent.graph import compute_config_fingerprint
+
+        test_category = f"_test_full_fp_{uuid.uuid4().hex}"
+        model = "llama3.2:1b"
+        real_fingerprint = compute_config_fingerprint(model, test_category)
+
+        for i in range(5):
+            metrics.log_turn(
+                task_snippet=f"old config turn {i}", category=test_category,
+                model=model, duration_seconds=1.0,
+                cascade_tier="cheap", escalated=True,
+                cheap_attempt_tokens=100, capable_attempt_tokens=0,
+                digest_override="fake_old_config_fingerprint_for_test",
+            )
+
+        stats_stale = metrics.category_escalation_rate(
+            test_category, digest_override="fake_old_config_fingerprint_for_test"
+        )
+        assert stats_stale["sample_size"] == 5, (
+            "sanity check failed: rows should be visible under their own fingerprint"
+        )
+
+        stats_current = metrics.category_escalation_rate(test_category, digest_override=real_fingerprint)
+        assert stats_current["sample_size"] == 0, (
+            "REGRESSION: rows logged under a stale config fingerprint (old "
+            "prompt or tool schema) still counted toward the current "
+            "escalation rate"
+        )
+
+    def test_fingerprint_ignores_cwd_but_reflects_category(self):
+        import os
+        from agent.graph import compute_config_fingerprint
+
+        model = "llama3.2:1b"
+        original_cwd = os.getcwd()
+        try:
+            fp_here = compute_config_fingerprint(model, "general")
+            os.chdir("/tmp")
+            fp_elsewhere = compute_config_fingerprint(model, "general")
+            assert fp_here == fp_elsewhere, (
+                "Fingerprint should be stable across different working "
+                "directories -- cwd is normalized out, it's not a "
+                "meaningful config change"
+            )
+
+            fp_different_category = compute_config_fingerprint(model, "implement")
+            assert fp_here != fp_different_category, (
+                "Fingerprint should differ when the category (and thus "
+                "the system prompt) genuinely changes"
+            )
+        finally:
+            os.chdir(original_cwd)

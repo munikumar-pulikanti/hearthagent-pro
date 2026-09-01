@@ -66,9 +66,14 @@ def log_turn(task_snippet, category, model, duration_seconds, tool_call_count=0,
              memory_pre_hit=False, memory_tier="none", error_occurred=False,
              assertion_flags="", input_tokens=0, output_tokens=0,
              cascade_tier="", escalated=False, cheap_attempt_tokens=0,
-             capable_attempt_tokens=0, shortcut_fired=False):
+             capable_attempt_tokens=0, shortcut_fired=False, digest_override=None):
+    """digest_override lets a caller supply a fingerprint that covers
+    more than just model weights (e.g. model + system prompt + tool
+    schema combined) -- anything that changes the model's effective
+    behavior should invalidate accumulated stats the same way a weight
+    swap does, not just the weights alone."""
     init_db()
-    model_digest = get_model_digest(model)
+    model_digest = digest_override if digest_override is not None else get_model_digest(model)
     conn = sqlite3.connect(METRICS_DB)
     conn.execute(
         "INSERT INTO turns (task_snippet, category, model, duration_seconds, "
@@ -199,7 +204,7 @@ def all_eval_results():
 ESCALATION_RATE_WINDOW = 50  # most recent turns per category, not all-time
 
 
-def category_escalation_rate(category: str, model: str = None) -> dict:
+def category_escalation_rate(category: str, model: str = None, digest_override: str = None) -> dict:
     """Rolling recent-window escalation rate for a category -- deliberately
     NOT an all-time average. An unweighted all-time average has a real flaw:
     as history accumulates, fresh evidence from the shortcut's own holdout
@@ -208,16 +213,22 @@ def category_escalation_rate(category: str, model: str = None) -> dict:
     ESCALATION_RATE_WINDOW turns means new evidence always has real,
     consistent influence on the number, not shrinking influence over time.
 
-    Also filters by the model's CURRENT digest when a model name is given.
-    Found via real review: logging model_digest gave visibility into a
-    silent model swap, but nothing actually USED it -- old rows from a
-    previous model version kept influencing the shortcut decision for up
-    to ESCALATION_RATE_WINDOW turns after a swap, since the rate was only
-    ever filtered by category. Filtering by current digest means a swap
-    naturally invalidates stale history: old rows simply stop matching,
-    no separate reset step required."""
+    Also filters by the CURRENT digest, when one is available. Found via
+    real review: logging model_digest gave visibility into a silent
+    model swap, but nothing actually USED it. Found via a real follow-up
+    review: filtering by model weights alone is still incomplete -- a
+    system prompt edit or a tool being added/changed/removed shifts the
+    win rate just as much as a weight change does. digest_override lets
+    a caller supply a wider fingerprint (model + prompt + tool schema
+    combined) instead of just the bare model-weights digest -- pass
+    digest_override when available; it takes priority over `model`."""
     turns = all_turns()  # already ordered by id DESC (most recent first)
-    current_digest = get_model_digest(model) if model else None
+    if digest_override is not None:
+        current_digest = digest_override
+    elif model:
+        current_digest = get_model_digest(model)
+    else:
+        current_digest = None
 
     # Only count turns where the cheap tier was actually attempted.
     # Shortcut-skipped turns (cheap_attempt_tokens is None) are always

@@ -4,6 +4,7 @@ logs usage metrics -- including which memory tier resolved the lookup."""
 import json
 import os
 import re
+import hashlib
 import time
 import random
 import random
@@ -134,6 +135,34 @@ def build_system_prompt(category: str) -> str:
         f"Never fabricate a result -- if you need to verify something (like a test "
         f"passing), actually run it via run_shell_tool rather than claiming success."
     )
+
+
+def compute_config_fingerprint(model_name: str, category: str) -> str:
+    """Combines model digest + system prompt + tool schema into one
+    fingerprint. Found via review: escalation-rate history should be
+    invalidated not just by a model weight swap, but by anything that
+    changes the model's effective behavior -- a system prompt edit or a
+    tool being added/changed/removed shifts the win rate just as much
+    as a weight change does. Only the model's weight digest was tracked
+    before this fix.
+
+    The system prompt bakes in the real cwd, which differs across
+    machines/runs but isn't a meaningful behavior change -- it's
+    normalized out before hashing so the fingerprint only reflects
+    actual prompt content changes."""
+    model_digest = metrics.get_model_digest(model_name)
+
+    prompt = build_system_prompt(category)
+    prompt_normalized = prompt.replace(os.getcwd(), "CWD_PLACEHOLDER")
+
+    tool_sig_parts = []
+    for t in TOOLS:
+        args_repr = str(sorted((getattr(t, "args", None) or {}).items()))
+        tool_sig_parts.append(f"{t.name}|{t.description}|{args_repr}")
+    tools_signature = "||".join(sorted(tool_sig_parts))
+
+    combined = f"{model_digest}::{prompt_normalized}::{tools_signature}"
+    return hashlib.sha256(combined.encode()).hexdigest()[:16]
 
 
 def build_agent(model_name: str, category: str):
@@ -332,7 +361,8 @@ class Session:
 
         base_messages = self.history + [("user", augmented_input)]
 
-        stats = metrics.category_escalation_rate(category, model=CASCADE_CHEAP_MODEL)
+        config_fingerprint = compute_config_fingerprint(CASCADE_CHEAP_MODEL, category)
+        stats = metrics.category_escalation_rate(category, digest_override=config_fingerprint)
         shortcut_eligible = (
             stats["sample_size"] >= SHORTCUT_MIN_SAMPLES
             and stats["escalation_rate_lower_bound"] is not None
@@ -348,6 +378,7 @@ class Session:
             if capable["error"] is not None:
                 duration = time.time() - start
                 metrics.log_turn(
+                    digest_override=config_fingerprint,
                     task_snippet=user_input, category=category, model=CASCADE_CAPABLE_MODEL,
                     duration_seconds=duration, memory_pre_hit=memory_pre_hit,
                     memory_tier=memory_tier, error_occurred=True,
@@ -374,6 +405,7 @@ class Session:
             capable_tokens = capable["input_tokens"] + capable["output_tokens"]
             duration = time.time() - start
             metrics.log_turn(
+                digest_override=config_fingerprint,
                 task_snippet=user_input, category=category, model=CASCADE_CAPABLE_MODEL,
                 duration_seconds=duration, tool_call_count=capable["tool_call_count"],
                 memory_pre_hit=memory_pre_hit, memory_tier=memory_tier,
@@ -408,6 +440,7 @@ class Session:
             final_content = cheap["final_content"]
             duration = time.time() - start
             metrics.log_turn(
+                digest_override=config_fingerprint,
                 task_snippet=user_input, category=category, model=CASCADE_CHEAP_MODEL,
                 duration_seconds=duration, tool_call_count=cheap["tool_call_count"],
                 memory_pre_hit=memory_pre_hit, memory_tier=memory_tier,
@@ -424,6 +457,7 @@ class Session:
         if capable["error"] is not None:
             duration = time.time() - start
             metrics.log_turn(
+                digest_override=config_fingerprint,
                 task_snippet=user_input, category=category, model=CASCADE_CAPABLE_MODEL,
                 duration_seconds=duration, memory_pre_hit=memory_pre_hit,
                 memory_tier=memory_tier, error_occurred=True,
@@ -452,6 +486,7 @@ class Session:
         duration = time.time() - start
 
         metrics.log_turn(
+            digest_override=config_fingerprint,
             task_snippet=user_input, category=category, model=CASCADE_CAPABLE_MODEL,
             duration_seconds=duration, tool_call_count=capable["tool_call_count"],
             memory_pre_hit=memory_pre_hit, memory_tier=memory_tier,
