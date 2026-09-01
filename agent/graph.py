@@ -138,13 +138,25 @@ def build_system_prompt(category: str) -> str:
 
 
 def compute_config_fingerprint(model_name: str, category: str) -> str:
-    """Combines model digest + system prompt + tool schema into one
+    """Combines model digest + system prompt + tool STRUCTURE into one
     fingerprint. Found via review: escalation-rate history should be
     invalidated not just by a model weight swap, but by anything that
-    changes the model's effective behavior -- a system prompt edit or a
-    tool being added/changed/removed shifts the win rate just as much
-    as a weight change does. Only the model's weight digest was tracked
-    before this fix.
+    changes the model's effective behavior -- a tool being added/removed,
+    or a parameter being added/removed/retyped, shifts the win rate just
+    as much as a weight change does.
+
+    Found via a real follow-up review: hashing a tool's full description
+    PROSE causes phantom invalidations -- fixing a typo or rewording a
+    sentence resets accumulated stats even though the tool's actual
+    calling interface (name, parameters, types) never changed. Only the
+    structural signature is hashed now: tool name + parameter names +
+    parameter types. This is deliberately a real tradeoff, not a free
+    win -- a genuinely meaningful rewording of a tool's description
+    (not just a typo fix) COULD change how a model decides to use it,
+    and that kind of change would no longer trigger invalidation. The
+    bet is that structural changes are the dominant, more common driver
+    of win-rate shifts, and typo-level noise on every doc edit is worse
+    in practice than occasionally missing a meaningful wording change.
 
     The system prompt bakes in the real cwd, which differs across
     machines/runs but isn't a meaningful behavior change -- it's
@@ -157,8 +169,13 @@ def compute_config_fingerprint(model_name: str, category: str) -> str:
 
     tool_sig_parts = []
     for t in TOOLS:
-        args_repr = str(sorted((getattr(t, "args", None) or {}).items()))
-        tool_sig_parts.append(f"{t.name}|{t.description}|{args_repr}")
+        args_schema = getattr(t, "args", None) or {}
+        # Structural only: parameter names + types, not per-parameter
+        # description text either, for the same reason.
+        param_structure = sorted(
+            (name, spec.get("type", "")) for name, spec in args_schema.items()
+        )
+        tool_sig_parts.append(f"{t.name}|{param_structure}")
     tools_signature = "||".join(sorted(tool_sig_parts))
 
     combined = f"{model_digest}::{prompt_normalized}::{tools_signature}"

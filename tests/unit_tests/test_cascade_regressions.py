@@ -198,3 +198,67 @@ class TestConfigFingerprintCoversPromptAndTools:
             )
         finally:
             os.chdir(original_cwd)
+
+
+class TestFingerprintIgnoresDescriptionProse:
+    """Regression: hashing a tool's full description text caused phantom
+    invalidations -- fixing a typo or rewording a sentence reset
+    accumulated stats even though the tool's actual calling interface
+    (name, parameter names, parameter types) never changed. Only the
+    structural signature is hashed now, not description prose."""
+
+    def test_description_only_edit_does_not_change_fingerprint(self):
+        from agent.graph import compute_config_fingerprint
+        from langchain_core.tools import tool as tool_decorator
+        import agent.graph as g
+
+        original_tools = g.TOOLS
+        try:
+            @tool_decorator
+            def read_file_tool(path: str) -> str:
+                "Read and return the contents of a file at the given path."
+                return ""
+
+            g.TOOLS = [read_file_tool]
+            fp_before = compute_config_fingerprint("llama3.2:1b", "general")
+
+            read_file_tool.description = "Reads the contents of a file at a given filesystem path and returns them."
+            fp_after = compute_config_fingerprint("llama3.2:1b", "general")
+
+            assert fp_before == fp_after, (
+                "REGRESSION: a description-only edit (same tool name, same "
+                "parameters) changed the fingerprint -- this causes phantom "
+                "invalidation of accumulated stats on a typo fix"
+            )
+        finally:
+            g.TOOLS = original_tools
+
+    def test_new_parameter_still_changes_fingerprint(self):
+        from agent.graph import compute_config_fingerprint
+        from langchain_core.tools import tool as tool_decorator
+        import agent.graph as g
+
+        original_tools = g.TOOLS
+        try:
+            @tool_decorator
+            def read_file_tool(path: str) -> str:
+                "Read and return the contents of a file at the given path."
+                return ""
+
+            g.TOOLS = [read_file_tool]
+            fp_before = compute_config_fingerprint("llama3.2:1b", "general")
+
+            @tool_decorator
+            def read_file_tool(path: str, encoding: str = "utf-8") -> str:
+                "Read and return the contents of a file at the given path."
+                return ""
+
+            g.TOOLS = [read_file_tool]
+            fp_after = compute_config_fingerprint("llama3.2:1b", "general")
+
+            assert fp_before != fp_after, (
+                "A real structural change (new parameter added) should "
+                "still invalidate the fingerprint"
+            )
+        finally:
+            g.TOOLS = original_tools
