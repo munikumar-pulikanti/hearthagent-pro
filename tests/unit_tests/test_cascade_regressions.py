@@ -90,3 +90,46 @@ class TestShortcutSelfReinforcement:
             "so the rate should be 0.0 once the fake shortcut-escalation is "
             "correctly excluded"
         )
+
+
+class TestDigestResetOnModelSwap:
+    """Regression: model_digest was logged for visibility but never
+    actually used -- old rows from a previous model version kept
+    influencing the shortcut's escalation-rate decision for up to
+    ESCALATION_RATE_WINDOW turns after a silent model swap. Filtering
+    by the model's CURRENT digest means a swap naturally invalidates
+    stale history, no explicit reset step needed."""
+
+    def test_old_digest_rows_excluded_after_simulated_swap(self):
+        import uuid
+        import sqlite3
+        test_category = f"_test_digest_swap_{uuid.uuid4().hex}"
+        real_model = "llama3.2:1b"
+
+        for i in range(5):
+            metrics.log_turn(
+                task_snippet=f"old model turn {i}", category=test_category,
+                model=real_model, duration_seconds=1.0,
+                cascade_tier="cheap", escalated=True,
+                cheap_attempt_tokens=100, capable_attempt_tokens=0,
+            )
+
+        conn = sqlite3.connect(metrics.METRICS_DB)
+        conn.execute(
+            "UPDATE turns SET model_digest = 'fake_old_digest_for_test' WHERE category = ?",
+            (test_category,)
+        )
+        conn.commit()
+        conn.close()
+
+        stats_no_filter = metrics.category_escalation_rate(test_category)
+        assert stats_no_filter["sample_size"] == 5, (
+            "sanity check failed: rows should count when no digest filter is applied"
+        )
+
+        stats_with_filter = metrics.category_escalation_rate(test_category, model=real_model)
+        assert stats_with_filter["sample_size"] == 0, (
+            "REGRESSION: old-digest rows still counted toward the escalation "
+            "rate after a simulated model swap -- the shortcut would stay "
+            "artificially alive on the previous model's stats"
+        )

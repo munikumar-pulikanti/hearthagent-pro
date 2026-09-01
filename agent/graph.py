@@ -332,7 +332,7 @@ class Session:
 
         base_messages = self.history + [("user", augmented_input)]
 
-        stats = metrics.category_escalation_rate(category)
+        stats = metrics.category_escalation_rate(category, model=CASCADE_CHEAP_MODEL)
         shortcut_eligible = (
             stats["sample_size"] >= SHORTCUT_MIN_SAMPLES
             and stats["escalation_rate_lower_bound"] is not None

@@ -199,15 +199,26 @@ def all_eval_results():
 ESCALATION_RATE_WINDOW = 50  # most recent turns per category, not all-time
 
 
-def category_escalation_rate(category: str) -> dict:
+def category_escalation_rate(category: str, model: str = None) -> dict:
     """Rolling recent-window escalation rate for a category -- deliberately
     NOT an all-time average. An unweighted all-time average has a real flaw:
     as history accumulates, fresh evidence from the shortcut's own holdout
     traffic gets diluted into irrelevance by a growing pile of old data,
     even though the holdout keeps running. Using only the most recent
     ESCALATION_RATE_WINDOW turns means new evidence always has real,
-    consistent influence on the number, not shrinking influence over time."""
+    consistent influence on the number, not shrinking influence over time.
+
+    Also filters by the model's CURRENT digest when a model name is given.
+    Found via real review: logging model_digest gave visibility into a
+    silent model swap, but nothing actually USED it -- old rows from a
+    previous model version kept influencing the shortcut decision for up
+    to ESCALATION_RATE_WINDOW turns after a swap, since the rate was only
+    ever filtered by category. Filtering by current digest means a swap
+    naturally invalidates stale history: old rows simply stop matching,
+    no separate reset step required."""
     turns = all_turns()  # already ordered by id DESC (most recent first)
+    current_digest = get_model_digest(model) if model else None
+
     # Only count turns where the cheap tier was actually attempted.
     # Shortcut-skipped turns (cheap_attempt_tokens is None) are always
     # logged as escalated=True by construction, not because cheap tier
@@ -217,7 +228,9 @@ def category_escalation_rate(category: str) -> dict:
     # underlying model improved and cheap tier would now succeed.
     category_turns = [
         t for t in turns
-        if t["category"] == category and t["cheap_attempt_tokens"] is not None
+        if t["category"] == category
+        and t["cheap_attempt_tokens"] is not None
+        and (current_digest is None or t.get("model_digest") == current_digest)
     ][:ESCALATION_RATE_WINDOW]
     if not category_turns:
         return {"sample_size": 0, "escalation_rate": None, "escalation_rate_lower_bound": None}
