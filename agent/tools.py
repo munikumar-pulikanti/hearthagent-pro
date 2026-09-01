@@ -14,6 +14,7 @@ from sentence_transformers import SentenceTransformer
 from ddgs import DDGS
 import requests
 import re
+from agent import metrics
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -496,7 +497,12 @@ def _fuzzy_verify(curated: str, candidate_lines: list) -> list:
 
 def _run_curator_pass(model: str, task: str, candidates_text: str, candidate_lines: list) -> list:
     """One curation attempt with a given model, verified against real
-    candidates. Returns a list of verified-kept lines (possibly empty)."""
+    candidates. Returns a list of verified-kept lines (possibly empty).
+
+    Logs real token cost for every call, cheap or capable-fallback --
+    curation calls were previously completely invisible in the metrics/
+    dashboard, a real gap given how much emphasis the rest of this
+    system puts on measured, not estimated, cost accounting."""
     prompt = CURATION_PROMPT.format(task=task, candidates=candidates_text)
     try:
         resp = requests.post(
@@ -505,11 +511,25 @@ def _run_curator_pass(model: str, task: str, candidates_text: str, candidate_lin
             timeout=30,
         ).json()
         curated = resp.get("response", "").strip()
+        input_tokens = resp.get("prompt_eval_count", 0) or 0
+        output_tokens = resp.get("eval_count", 0) or 0
     except Exception:
+        metrics.log_turn(
+            task_snippet=task, category="_memory_curation", model=model,
+            duration_seconds=0, error_occurred=True,
+            assertion_flags="curation_call_failed",
+            cascade_tier="curation_cheap" if model == CURATOR_MODEL else "curation_capable",
+        )
         return None  # signals "curation call itself failed" -- different from "found nothing"
-    if not curated:
-        return []
-    return _fuzzy_verify(curated, candidate_lines)
+
+    verified = _fuzzy_verify(curated, candidate_lines) if curated else []
+    metrics.log_turn(
+        task_snippet=task, category="_memory_curation", model=model,
+        duration_seconds=0, input_tokens=input_tokens, output_tokens=output_tokens,
+        cascade_tier="curation_cheap" if model == CURATOR_MODEL else "curation_capable",
+        escalated=(model != CURATOR_MODEL),
+    )
+    return verified
 
 
 def curate_memory_context(task: str, raw_memory_text: str) -> str:
