@@ -262,3 +262,67 @@ class TestFingerprintIgnoresDescriptionProse:
             )
         finally:
             g.TOOLS = original_tools
+
+
+class TestWithinWindowDriftDetection:
+    """Regression/feature test: the config fingerprint deliberately does
+    not hash a tool's description text (see TestFingerprintIgnoresDescriptionProse),
+    which means a genuinely meaningful description rewrite goes
+    undetected by the fingerprint itself. detect_within_window_drift is
+    the active mitigation -- it splits the same rolling window in half
+    and flags a real jump in escalation rate between the older and
+    newer halves, surfacing exactly the kind of silent behavior change
+    the fingerprint can't see on its own."""
+
+    def test_real_drift_is_detected(self):
+        import uuid
+        test_category = f"_test_drift_{uuid.uuid4().hex}"
+        same_fingerprint = "unchanging_fake_fingerprint_for_drift_test"
+
+        for i in range(15):
+            metrics.log_turn(
+                task_snippet=f"older turn {i}", category=test_category,
+                model="llama3.2:1b", duration_seconds=1.0,
+                cascade_tier="cheap", escalated=False,
+                cheap_attempt_tokens=100, capable_attempt_tokens=0,
+                digest_override=same_fingerprint,
+            )
+        for i in range(15):
+            metrics.log_turn(
+                task_snippet=f"newer turn {i}", category=test_category,
+                model="llama3.2:1b", duration_seconds=1.0,
+                cascade_tier="capable", escalated=True,
+                cheap_attempt_tokens=100, capable_attempt_tokens=200,
+                digest_override=same_fingerprint,
+            )
+
+        result = metrics.detect_within_window_drift(test_category, digest_override=same_fingerprint)
+        assert result["drift_detected"] is True, (
+            "FAIL: a real behavior shift under the same fingerprint was not detected"
+        )
+
+    def test_stable_data_is_not_flagged(self):
+        import uuid
+        test_category = f"_test_stable_{uuid.uuid4().hex}"
+        same_fingerprint = "unchanging_fake_fingerprint_for_drift_test"
+
+        for i in range(30):
+            metrics.log_turn(
+                task_snippet=f"stable turn {i}", category=test_category,
+                model="llama3.2:1b", duration_seconds=1.0,
+                cascade_tier="cheap", escalated=(i % 5 == 0),
+                cheap_attempt_tokens=100, capable_attempt_tokens=0,
+                digest_override=same_fingerprint,
+            )
+
+        result = metrics.detect_within_window_drift(test_category, digest_override=same_fingerprint)
+        assert result["drift_detected"] is False, (
+            "REGRESSION: consistent, stable behavior was falsely flagged as drift"
+        )
+
+    def test_insufficient_data_does_not_flag(self):
+        import uuid
+        test_category = f"_test_insufficient_{uuid.uuid4().hex}"
+        result = metrics.detect_within_window_drift(test_category)
+        assert result["drift_detected"] is False
+        assert result["reason"] == "insufficient_data"

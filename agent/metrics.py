@@ -270,3 +270,69 @@ def _wilson_lower_bound(successes: int, n: int, z: float = 1.96) -> float:
     center = p_hat + z * z / (2 * n)
     margin = z * ((p_hat * (1 - p_hat) / n + z * z / (4 * n * n)) ** 0.5)
     return max(0.0, (center - margin) / denom)
+
+
+def detect_within_window_drift(category: str, model: str = None, digest_override: str = None,
+                                min_half_size: int = 10, drift_threshold: float = 0.3) -> dict:
+    """Splits the same rolling window used by category_escalation_rate
+    into two halves -- the more recent turns vs. the older ones -- and
+    compares their escalation rates.
+
+    Why this exists: the config fingerprint deliberately does NOT hash a
+    tool's description text (see compute_config_fingerprint), since
+    hashing prose caused phantom invalidations on typo fixes. But that
+    means a genuinely meaningful description rewrite -- exactly how you'd
+    steer a model's behavior without touching its calling signature --
+    goes completely undetected by the fingerprint. It doesn't go
+    completely undetected by the SYSTEM, though: since a fingerprint
+    change doesn't happen, old and new behavior keep accumulating in the
+    same window, and if the new behavior is genuinely worse, the recent
+    half of that window will show a real, measurable jump in escalation
+    rate. This function surfaces that jump as an explicit flag, rather
+    than leaving it as a passive signal nobody's actively watching.
+
+    This is deliberately a FLAG, not an action -- it never changes
+    routing, it only reports. A human decides what a flagged drift
+    actually means (real, harmful description edit vs. task mix shift
+    vs. noise) -- same as every other "surface it, don't auto-act on
+    it" decision in this system."""
+    turns = all_turns()
+    if digest_override is not None:
+        current_digest = digest_override
+    elif model:
+        current_digest = get_model_digest(model)
+    else:
+        current_digest = None
+
+    category_turns = [
+        t for t in turns
+        if t["category"] == category
+        and t["cheap_attempt_tokens"] is not None
+        and (current_digest is None or t.get("model_digest") == current_digest)
+    ][:ESCALATION_RATE_WINDOW]
+
+    total = len(category_turns)
+    half = total // 2
+    if half < min_half_size:
+        return {
+            "drift_detected": False, "reason": "insufficient_data",
+            "newer_half_size": half, "older_half_size": total - half,
+        }
+
+    # category_turns is ordered most-recent-first (inherited from all_turns)
+    newer_half = category_turns[:half]
+    older_half = category_turns[half:2 * half]
+
+    newer_rate = sum(1 for t in newer_half if t["escalated"]) / len(newer_half)
+    older_rate = sum(1 for t in older_half if t["escalated"]) / len(older_half)
+    drift = newer_rate - older_rate
+
+    return {
+        "drift_detected": drift >= drift_threshold,
+        "reason": "escalation_rate_increased" if drift >= drift_threshold else "stable",
+        "newer_half_rate": newer_rate,
+        "older_half_rate": older_rate,
+        "drift_magnitude": drift,
+        "newer_half_size": len(newer_half),
+        "older_half_size": len(older_half),
+    }
