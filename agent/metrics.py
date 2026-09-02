@@ -1,6 +1,7 @@
 """Usage metrics for hearthagent-pro -- tracks routing decisions, model
 usage, and which memory tier (hot/warm/cold/none) resolved each lookup."""
 import sqlite3
+import time
 import requests
 from pathlib import Path
 
@@ -272,11 +273,35 @@ def _wilson_lower_bound(successes: int, n: int, z: float = 1.96) -> float:
     return max(0.0, (center - margin) / denom)
 
 
+def _window_span_seconds(turns) -> int:
+    """Wall-clock span the given turns cover (newest ts - oldest ts).
+
+    The window is sized by turn count, not time, so this is the honest
+    read on how stale the comparison is: a low-volume category can take
+    weeks to accumulate ESCALATION_RATE_WINDOW turns, and the older half
+    is then a weeks-old baseline. Reported so a caller (or the dashboard)
+    can judge that instead of trusting a jump blindly."""
+    stamps = [t["timestamp"] for t in turns if t.get("timestamp") is not None]
+    return max(stamps) - min(stamps) if len(stamps) >= 2 else 0
+
+
 def detect_within_window_drift(category: str, model: str = None, digest_override: str = None,
-                                min_half_size: int = 10, drift_threshold: float = 0.3) -> dict:
+                                min_half_size: int = 10, drift_threshold: float = 0.3,
+                                max_age_seconds: float = None) -> dict:
     """Splits the same rolling window used by category_escalation_rate
     into two halves -- the more recent turns vs. the older ones -- and
     compares their escalation rates.
+
+    Window sizing (the question this leaves open): the split is by turn
+    COUNT (ESCALATION_RATE_WINDOW), not wall clock. Turn count
+    self-normalizes for volume -- a busy afternoon fills the window
+    faster without moving the rate, since the rate is escalations / n.
+    What it does NOT bound is how far back the older half reaches, so
+    every result reports window_span_seconds, and passing
+    max_age_seconds drops turns older than that before the split (the
+    window can then fall below 2 * min_half_size and report
+    insufficient_data, which is the honest answer -- better than
+    comparing today's behavior against three-week-old rows).
 
     Why this exists: the config fingerprint deliberately does NOT hash a
     tool's description text (see compute_config_fingerprint), since
@@ -311,12 +336,20 @@ def detect_within_window_drift(category: str, model: str = None, digest_override
         and (current_digest is None or t.get("model_digest") == current_digest)
     ][:ESCALATION_RATE_WINDOW]
 
+    if max_age_seconds is not None:
+        cutoff = time.time() - max_age_seconds
+        category_turns = [
+            t for t in category_turns
+            if t.get("timestamp") is not None and t["timestamp"] >= cutoff
+        ]
+
     total = len(category_turns)
     half = total // 2
     if half < min_half_size:
         return {
             "drift_detected": False, "reason": "insufficient_data",
             "newer_half_size": half, "older_half_size": total - half,
+            "window_span_seconds": _window_span_seconds(category_turns),
         }
 
     # category_turns is ordered most-recent-first (inherited from all_turns)
@@ -335,4 +368,5 @@ def detect_within_window_drift(category: str, model: str = None, digest_override
         "drift_magnitude": drift,
         "newer_half_size": len(newer_half),
         "older_half_size": len(older_half),
+        "window_span_seconds": _window_span_seconds(newer_half + older_half),
     }

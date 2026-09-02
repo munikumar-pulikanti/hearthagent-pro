@@ -300,6 +300,38 @@ class TestWithinWindowDriftDetection:
         assert result["drift_detected"] is True, (
             "FAIL: a real behavior shift under the same fingerprint was not detected"
         )
+        # the wall-clock span of the compared window is always reported, so a
+        # caller can tell a real jump from a stale-baseline artifact
+        assert "window_span_seconds" in result
+
+    def test_max_age_excludes_stale_rows(self):
+        import sqlite3
+        test_category = f"_test_drift_age_{uuid.uuid4().hex}"
+        same_fingerprint = "unchanging_fake_fingerprint_for_drift_test"
+
+        for i in range(30):
+            metrics.log_turn(
+                task_snippet=f"turn {i}", category=test_category,
+                model="llama3.2:1b", duration_seconds=1.0,
+                cascade_tier="cheap", escalated=(i % 4 == 0),
+                cheap_attempt_tokens=100, capable_attempt_tokens=0,
+                digest_override=same_fingerprint,
+            )
+        # backdate every logged turn well past the age cutoff
+        conn = sqlite3.connect(metrics.METRICS_DB)
+        conn.execute(
+            "UPDATE turns SET timestamp = timestamp - 100000 WHERE category = ?",
+            (test_category,),
+        )
+        conn.commit()
+        conn.close()
+
+        result = metrics.detect_within_window_drift(
+            test_category, digest_override=same_fingerprint, max_age_seconds=3600,
+        )
+        assert result["reason"] == "insufficient_data", (
+            "stale rows past max_age_seconds should be dropped before the split"
+        )
 
     def test_stable_data_is_not_flagged(self):
         import uuid

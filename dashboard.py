@@ -52,6 +52,32 @@ else:
                 use_container_width=True,
             )
 
+    st.subheader("Routing drift (flag only -- never changes routing)")
+    st.caption(
+        "Newer vs older half of each category's escalation-rate window. A flagged "
+        "row means the cheap tier started failing more often with no declared config "
+        "change (e.g. a tool-description rewrite the fingerprint can't see). Span is "
+        "how far back the comparison reaches -- the window is turn-count sized, not "
+        "time-bounded, so a wide span on a low-volume route means a stale baseline."
+    )
+    drift_rows = []
+    for cat in metrics.category_breakdown():
+        d = metrics.detect_within_window_drift(cat)
+        span_days = d.get("window_span_seconds", 0) / 86400
+        if d["reason"] == "insufficient_data":
+            status = f"-- (not enough data: {d['newer_half_size']}+{d['older_half_size']})"
+            newer = older = mag = None
+        else:
+            status = "DRIFT" if d["drift_detected"] else "stable"
+            newer, older, mag = d["newer_half_rate"], d["older_half_rate"], d["drift_magnitude"]
+        drift_rows.append({
+            "category": cat, "status": status,
+            "newer_half_rate": newer, "older_half_rate": older,
+            "drift_magnitude": mag, "window_span_days": round(span_days, 1),
+        })
+    if drift_rows:
+        st.dataframe(pd.DataFrame(drift_rows), use_container_width=True, hide_index=True)
+
     st.subheader("Recent turns")
     st.dataframe(
         df[["timestamp", "category", "model", "duration_seconds",
